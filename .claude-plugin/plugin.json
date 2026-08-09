@@ -1,0 +1,10 @@
+{
+  "name": "agy",
+  "version": "0.1.0",
+  "description": "Use Google's Antigravity CLI (agy) from Claude Code to review code or delegate tasks.",
+  "author": {
+    "name": "unlikelyzero"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/unlikelyzero/agy-companion"
+}

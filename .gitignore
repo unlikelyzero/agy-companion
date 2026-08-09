@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+
+# Local plugin state (job records, logs) written at runtime under the
+# fallback state directory when CLAUDE_PLUGIN_DATA is not set.
+.agy-companion-state/
