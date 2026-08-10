@@ -148,10 +148,18 @@ test("runAgyPrompt: surfaces a clear message when the agy binary is missing", as
 
 test("runAgyPrompt: rejects with AgyTimeoutError past the configured timeout", async () => {
   const spawnImpl = () => createFakeChild(); // never closes
-  await assert.rejects(
-    runAgyPrompt("/repo", { prompt: "hi", spawnImpl, timeoutMs: 5 }),
-    (error) => error instanceof AgyTimeoutError
-  );
+  // runAgyPrompt unrefs its timeout timer (a real child process keeps the
+  // event loop alive in production, the fake EventEmitter here does not), so
+  // hold a ref'd timer open or the loop drains before the timeout can fire.
+  const keepAlive = setTimeout(() => {}, 10_000);
+  try {
+    await assert.rejects(
+      runAgyPrompt("/repo", { prompt: "hi", spawnImpl, timeoutMs: 5 }),
+      (error) => error instanceof AgyTimeoutError
+    );
+  } finally {
+    clearTimeout(keepAlive);
+  }
 });
 
 test("runAgyPrompt: tails raw stdout/stderr chunks to the given file", async () => {
