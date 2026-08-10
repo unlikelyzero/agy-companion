@@ -1,0 +1,72 @@
+name: agy release probe
+
+# Nightly check for new Antigravity CLI releases. agy has no non-interactive
+# auth (google-antigravity/antigravity-cli#78), so hosted runners cannot run a
+# live integration test. This probe does what IS possible unauthenticated:
+# install the latest agy via the official install script, confirm the binary
+# runs, and compare its version against .github/agy-tested-version (the last
+# version verified by hand per docs/TESTING.md). When a newer version appears,
+# it opens a tracking issue prompting a manual compatibility pass.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install latest agy
+        run: |
+          curl -fsSL https://antigravity.google/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify binary runs and capture version
+        id: version
+        run: |
+          latest="$(agy --version)"
+          echo "agy --version -> $latest"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Compare against last tested version
+        id: compare
+        run: |
+          tested="$(cat .github/agy-tested-version | tr -d '[:space:]')"
+          latest="${{ steps.version.outputs.latest }}"
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+          if [ "$tested" = "$latest" ]; then
+            echo "Up to date: $tested"
+            echo "new_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New release: $latest (last tested: $tested)"
+            echo "new_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open tracking issue for new release
+        if: steps.compare.outputs.new_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.version.outputs.latest }}
+          TESTED: ${{ steps.compare.outputs.tested }}
+        run: |
+          title="New agy release $LATEST needs a compatibility pass"
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq 'length')"
+          if [ "$existing" != "0" ]; then
+            echo "Tracking issue already open, skipping."
+            exit 0
+          fi
+          body="The nightly probe found agy \`$LATEST\` available; the plugin was last verified against \`$TESTED\`.
+
+          agy has no non-interactive auth, so this cannot be tested on a hosted runner. To close this issue:
+
+          1. Update agy locally (\`curl -fsSL https://antigravity.google/cli/install.sh | bash\`) and confirm \`agy --version\` reports \`$LATEST\`.
+          2. Run the manual checklist in \`docs/TESTING.md\` (at minimum: \`/agy:review --wait\` against a real diff, confirming the \`--output-format json --json-schema\` envelope still parses).
+          3. Update \`.github/agy-tested-version\` to \`$LATEST\` and commit."
+          gh issue create --title "$title" --body "$body"
