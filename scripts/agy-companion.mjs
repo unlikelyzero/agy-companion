@@ -295,6 +295,7 @@ async function executeReviewRun(request) {
   const result = await runAgyStructured(context.repoRoot, {
     prompt,
     schema: REVIEW_SCHEMA,
+    schemaPath: REVIEW_SCHEMA_PATH,
     write: false,
     onProgress: request.onProgress,
     tailFile: request.tailFile
@@ -317,6 +318,7 @@ async function executeReviewRun(request) {
     result: parsed.parsed,
     rawOutput: parsed.rawOutput,
     parseError: parsed.parseError,
+    conversationId: result.conversationId ?? null,
     retried: result.retried
   };
 
@@ -371,6 +373,8 @@ async function executeTaskRun(request) {
     prompt,
     continueLatest: Boolean(request.resumeLast),
     write: Boolean(request.write),
+    model: request.model || undefined,
+    effort: request.effort || undefined,
     onProgress: request.onProgress,
     tailFile: request.tailFile
   });
@@ -454,8 +458,8 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, prompt, write, resumeLast, jobId }) {
-  return { cwd, prompt, write, resumeLast, jobId };
+function buildTaskRequest({ cwd, prompt, write, resumeLast, jobId, model, effort }) {
+  return { cwd, prompt, write, resumeLast, jobId, model, effort };
 }
 
 function readTaskPrompt(cwd, options, positionals) {
@@ -577,7 +581,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "prompt-file"],
+    valueOptions: ["cwd", "prompt-file", "model", "effort"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"]
   });
 
@@ -591,6 +595,11 @@ async function handleTask(argv) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
   const write = Boolean(options.write);
+  const model = options.model || undefined;
+  const effort = options.effort || undefined;
+  if (effort && !["low", "medium", "high"].includes(effort)) {
+    throw new Error(`Invalid --effort "${effort}". agy accepts: low, medium, high.`);
+  }
   const taskMetadata = buildTaskRunMetadata({ prompt, resumeLast });
 
   if (options.background) {
@@ -598,7 +607,7 @@ async function handleTask(argv) {
     requireTaskRequest(prompt, resumeLast);
 
     const job = buildTaskJob(workspaceRoot, taskMetadata, write);
-    const request = buildTaskRequest({ cwd, prompt, write, resumeLast, jobId: job.id });
+    const request = buildTaskRequest({ cwd, prompt, write, resumeLast, jobId: job.id, model, effort });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, `${payload.title} started in the background as ${payload.jobId}. Check /agy:status ${payload.jobId} for progress.\n`, options.json);
     return;
@@ -608,7 +617,7 @@ async function handleTask(argv) {
   await runForegroundCommand(
     job,
     (progress, logFile) =>
-      executeTaskRun({ cwd, prompt, write, resumeLast, jobId: job.id, onProgress: progress, tailFile: logFile }),
+      executeTaskRun({ cwd, prompt, write, resumeLast, model, effort, jobId: job.id, onProgress: progress, tailFile: logFile }),
     { json: options.json }
   );
 }

@@ -1,6 +1,6 @@
 ---
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the agy rescue subagent
-argument-hint: "[--background|--wait] [--resume|--fresh] [what agy should investigate, solve, or continue]"
+argument-hint: "[--background|--wait] [--resume|--fresh] [--model <model>] [--effort <low|medium|high>] [what agy should investigate, solve, or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
@@ -17,7 +17,7 @@ Execution mode:
 - If the request includes `--wait`, run the `agy:agy-rescue` subagent in the foreground.
 - If neither flag is present, default to foreground.
 - `--background` and `--wait` are execution flags for Claude Code. Do not forward them to `task`, and do not treat them as part of the natural-language task text.
-- agy 1.0.1 has no `--model` or reasoning-effort flag (unlike Codex), so this command does not accept them. If the user asks for a specific model or reasoning effort, tell them agy-companion has no way to honor that today.
+- `--model <model>` and `--effort <low|medium|high>` are runtime-selection flags agy genuinely supports (verified against a real `agy 1.1.11` install — `--effort` accepts exactly `low`, `medium`, or `high`). Preserve them for the forwarded `task` call, but do not treat them as part of the natural-language task text. Leave both unset unless the user explicitly asks for a specific model or reasoning effort.
 - If the request includes `--resume`, do not ask whether to continue. The user already chose.
 - If the request includes `--fresh`, do not ask whether to continue. The user already chose.
 - Otherwise, before starting agy, check for a resumable rescue conversation from this repo by running:

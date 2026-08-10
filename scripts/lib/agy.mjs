@@ -4,21 +4,30 @@
  *
  * This is NOT a port of Codex's app-server-broker.mjs / app-server.mjs. Codex
  * talks to a persistent JSON-RPC "app-server" process over stdio: real
- * bidirectional streaming, native `outputSchema` enforcement, ACP-style
- * cancel semantics. `agy` 1.0.1 has none of that (confirmed against a real
- * install; see docs/SPIKE-findings.md referenced from the README). `agy`
- * only exposes a non-interactive `--print` mode that blocks until it has a
- * final answer and prints it to stdout — there is no thread/turn protocol,
- * no reasoning-summary stream, and no way to recover a conversation id for
- * a specific past run (only `--continue`, which resumes agy's own
- * most-recently-used conversation).
+ * bidirectional streaming, ACP-style cancel semantics. `agy` has no
+ * persistent broker or thread/turn protocol — every command spawns its own
+ * `agy --print ...` process that blocks until it has a final answer.
  *
- * So this module is deliberately much simpler than codex.mjs: spawn `agy
- * --print ...`, tail its stdout/stderr, detect the one interactive prompt
- * agy can emit (a Google OAuth "authentication required" screen) and fail
- * fast instead of hanging, and — for the two review commands, which need
- * structured JSON back — parse + validate the final answer locally against
- * schemas/review-output.schema.json with one retry on malformed output.
+ * CORRECTION (verified 2026-08 against a real `agy 1.1.11` install — see
+ * README "Differences from codex-plugin-cc" for the full story): earlier
+ * drafts of this file assumed agy had no native structured-output
+ * enforcement, based on third-party spike notes written against `agy
+ * 1.0.1`. That was wrong for the version actually available today. Current
+ * `agy` has a real `--json-schema <path>` flag combined with `--output-format
+ * json`, which makes the model itself produce schema-conformant output and
+ * hands it back pre-parsed as `structured_output` in a single JSON envelope
+ * on stdout — closer to Codex's `outputSchema` than the prompt-and-hope
+ * fallback this file used to rely on. `runAgyStructured` below uses that
+ * native path, and still runs one local schema-validation pass as
+ * defense-in-depth in case enforcement is ever soft. If `--json-schema` is
+ * rejected by an older `agy` (flag unrecognized), that's surfaced as a clear
+ * `AgyUnsupportedFeatureError` telling the user to run `agy update`, rather
+ * than silently degrading to fragile prompt-based JSON extraction.
+ *
+ * Also corrected: agy's JSON envelope includes a real `conversation_id`, so
+ * `--conversation <id>` can target a specific past run, not just
+ * `--continue` (agy's most-recently-used conversation) as earlier notes
+ * assumed.
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -49,6 +58,18 @@ export class AgyTimeoutError extends Error {
   constructor(timeoutMs) {
     super(`agy did not finish within ${Math.round(timeoutMs / 1000)}s.`);
     this.name = "AgyTimeoutError";
+  }
+}
+
+export class AgyUnsupportedFeatureError extends Error {
+  constructor(flag, stderr) {
+    super(
+      `This install of agy does not recognize \`${flag}\`. agy-companion requires a recent agy build ` +
+        `(tested against 1.1.11). Run \`agy update\`, then retry.`
+    );
+    this.name = "AgyUnsupportedFeatureError";
+    this.flag = flag;
+    this.stderr = stderr ?? "";
   }
 }
 
@@ -114,6 +135,9 @@ function buildAgyArgs(options) {
   if (options.continueLatest) {
     args.push("--continue");
   }
+  if (options.conversationId) {
+    args.push("--conversation", options.conversationId);
+  }
   for (const dir of options.addDirs ?? []) {
     args.push("--add-dir", dir);
   }
@@ -122,6 +146,18 @@ function buildAgyArgs(options) {
   }
   if (options.sandbox) {
     args.push("--sandbox");
+  }
+  if (options.model) {
+    args.push("--model", options.model);
+  }
+  if (options.effort) {
+    args.push("--effort", options.effort);
+  }
+  if (options.outputFormat) {
+    args.push("--output-format", options.outputFormat);
+  }
+  if (options.jsonSchemaPath) {
+    args.push("--json-schema", options.jsonSchemaPath);
   }
   return args;
 }
@@ -241,11 +277,16 @@ export function runAgyPrompt(cwd, options = {}) {
       settled = true;
       clearTimeout(timer);
       options.onProgress?.({ message: "agy finished.", phase: "finalizing" });
+      const cleanStderr = cleanAgyStderr(stderr);
+      if (options.jsonSchemaPath && /flag provided but not defined/i.test(cleanStderr) && /json-schema/i.test(cleanStderr)) {
+        reject(new AgyUnsupportedFeatureError("--json-schema", cleanStderr));
+        return;
+      }
       resolve({
         status: code ?? (signal ? 1 : 0),
         signal: signal ?? null,
         stdout,
-        stderr: cleanAgyStderr(stderr)
+        stderr: cleanStderr
       });
     });
   });
@@ -273,7 +314,9 @@ function extractJsonCandidate(text) {
 
 /**
  * Parses `rawOutput` as JSON and validates it against `schema`.
- * Returns `{ ok, data, error }`.
+ * Returns `{ ok, data, error }`. Kept as a standalone helper — used both for
+ * the top-level agy JSON envelope and, defensively, as a fallback if that
+ * envelope's own parse fails for some unanticipated reason.
  */
 export function parseAndValidateStructuredOutput(rawOutput, schema) {
   const candidate = extractJsonCandidate(rawOutput);
@@ -296,50 +339,120 @@ export function parseAndValidateStructuredOutput(rawOutput, schema) {
   return { ok: true, data, error: null };
 }
 
-const STRUCTURED_RETRY_PROMPT =
-  "Your last response was not valid JSON matching the schema. Return ONLY the corrected JSON with no prose, no markdown code fences, and no extra text before or after it.";
+/**
+ * Parses agy's `--output-format json` envelope, e.g.:
+ *   {"conversation_id":"...","status":"SUCCESS","response":"...",
+ *    "structured_output":{...},"json_schema":{...},"usage":{...}}
+ * Returns `{ ok, envelope, error }`. `envelope` is the raw parsed object
+ * (not yet the caller's payload) so callers can inspect `status` and
+ * `conversation_id` even on failure.
+ */
+export function parseAgyEnvelope(rawOutput) {
+  const candidate = extractJsonCandidate(rawOutput);
+  if (!candidate) {
+    return { ok: false, envelope: null, error: "agy did not return any output." };
+  }
+  let envelope;
+  try {
+    envelope = JSON.parse(candidate);
+  } catch (error) {
+    return { ok: false, envelope: null, error: `agy's output envelope is not valid JSON: ${error.message}` };
+  }
+  if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
+    return { ok: false, envelope: null, error: "agy's output envelope was not a JSON object." };
+  }
+  return { ok: true, envelope, error: null };
+}
 
 /**
- * Runs `agy --print <prompt>`, parses the final answer as JSON against
- * `schema`, and — since agy has no server-side schema enforcement the way
- * Codex's app-server does — retries exactly once with a corrective
- * `agy --continue` prompt if parsing/validation fails before giving up and
- * surfacing the parse error to the caller.
+ * Runs `agy --print <prompt> --output-format json --json-schema <path>` and
+ * returns the model's schema-conformant answer.
+ *
+ * `agy` enforces the schema itself (verified against a real 1.1.11 install —
+ * see the file-level comment above), handing back a single JSON envelope on
+ * stdout with a `structured_output` field already matching it. This still
+ * runs one local validation pass against `options.schema` as defense in
+ * depth, but does not need Codex-companion's retry-on-malformed-JSON dance;
+ * a genuine mismatch here means something is actually wrong (agy reported a
+ * non-SUCCESS status, or its enforcement produced something the schema
+ * still rejects), not that the model needs another attempt at formatting.
+ *
+ * `options.schemaPath` is required — it's the file path passed to
+ * `--json-schema`; `options.schema` is the same schema already parsed into
+ * an object, used only for the local double-check.
  */
 export async function runAgyStructured(cwd, options = {}) {
-  const first = await runAgyPrompt(cwd, options);
-  const firstParsed = parseAndValidateStructuredOutput(first.stdout, options.schema);
-  if (firstParsed.ok) {
+  if (!options.schemaPath) {
+    throw new Error("runAgyStructured requires options.schemaPath (a file path passed to agy's --json-schema flag).");
+  }
+
+  const result = await runAgyPrompt(cwd, {
+    ...options,
+    outputFormat: "json",
+    jsonSchemaPath: options.schemaPath
+  });
+
+  const parsedEnvelope = parseAgyEnvelope(result.stdout);
+  if (!parsedEnvelope.ok) {
     return {
-      status: 0,
-      stdout: first.stdout,
-      stderr: first.stderr,
-      parsed: firstParsed.data,
-      parseError: null,
+      status: 1,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      parsed: null,
+      conversationId: null,
+      parseError: parsedEnvelope.error,
       retried: false
     };
   }
 
-  options.onProgress?.({
-    message: `agy's response did not match the expected schema (${firstParsed.error}); retrying once.`,
-    phase: "finalizing"
-  });
+  const { envelope } = parsedEnvelope;
+  const conversationId = envelope.conversation_id ?? null;
 
-  const second = await runAgyPrompt(cwd, {
-    ...options,
-    prompt: STRUCTURED_RETRY_PROMPT,
-    continueLatest: true
-  });
-  const secondParsed = parseAndValidateStructuredOutput(second.stdout, options.schema);
+  if (envelope.status !== "SUCCESS") {
+    return {
+      status: 1,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      parsed: null,
+      conversationId,
+      parseError: `agy reported status "${envelope.status ?? "unknown"}" instead of SUCCESS.`,
+      retried: false
+    };
+  }
+
+  if (envelope.structured_output === undefined || envelope.structured_output === null) {
+    return {
+      status: 1,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      parsed: null,
+      conversationId,
+      parseError: "agy reported SUCCESS but returned no structured_output.",
+      retried: false
+    };
+  }
+
+  const { valid, errors } = validateAgainstSchema(envelope.structured_output, options.schema);
+  if (!valid) {
+    return {
+      status: 1,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      parsed: null,
+      conversationId,
+      parseError: `agy's structured_output did not match the schema on local re-validation: ${errors[0]}`,
+      retried: false
+    };
+  }
 
   return {
-    status: secondParsed.ok ? 0 : 1,
-    stdout: second.stdout,
-    stderr: second.stderr,
-    parsed: secondParsed.ok ? secondParsed.data : null,
-    parseError: secondParsed.ok ? null : secondParsed.error,
-    rawOutput: second.stdout,
-    retried: true
+    status: 0,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    parsed: envelope.structured_output,
+    conversationId,
+    parseError: null,
+    retried: false
   };
 }
 

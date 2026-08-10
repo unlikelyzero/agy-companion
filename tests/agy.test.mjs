@@ -8,7 +8,9 @@ import { test } from "node:test";
 import {
   AgyAuthRequiredError,
   AgyTimeoutError,
+  AgyUnsupportedFeatureError,
   diffGitStatusSnapshots,
+  parseAgyEnvelope,
   parseAndValidateStructuredOutput,
   readOutputSchema,
   runAgyPrompt,
@@ -56,6 +58,58 @@ test("runAgyPrompt: builds --print, --continue, and --dangerously-skip-permissio
   };
   await runAgyPrompt("/repo", { prompt: "hello", continueLatest: true, write: true, spawnImpl });
   assert.deepEqual(capturedArgs, ["--print", "hello", "--continue", "--dangerously-skip-permissions"]);
+});
+
+test("runAgyPrompt: builds --conversation, --model, --effort, --output-format, and --json-schema from options", async () => {
+  let capturedArgs = null;
+  const spawnImpl = (command, args) => {
+    capturedArgs = args;
+    const child = createFakeChild();
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  };
+  await runAgyPrompt("/repo", {
+    prompt: "hello",
+    conversationId: "abc-123",
+    model: "gemini-3-pro",
+    effort: "high",
+    outputFormat: "json",
+    jsonSchemaPath: "/tmp/schema.json",
+    spawnImpl
+  });
+  assert.deepEqual(capturedArgs, [
+    "--print",
+    "hello",
+    "--conversation",
+    "abc-123",
+    "--model",
+    "gemini-3-pro",
+    "--effort",
+    "high",
+    "--output-format",
+    "json",
+    "--json-schema",
+    "/tmp/schema.json"
+  ]);
+});
+
+test("runAgyPrompt: rejects with AgyUnsupportedFeatureError when --json-schema is rejected by an old agy", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stderr.emit("data", Buffer.from("flag provided but not defined: -json-schema\n"));
+      child.emit("close", 2, null);
+    });
+    return child;
+  };
+  await assert.rejects(
+    runAgyPrompt("/repo", { prompt: "hi", jsonSchemaPath: "/tmp/schema.json", spawnImpl }),
+    (error) => {
+      assert.ok(error instanceof AgyUnsupportedFeatureError);
+      assert.equal(error.flag, "--json-schema");
+      return true;
+    }
+  );
 });
 
 test("runAgyPrompt: rejects with AgyAuthRequiredError and captures the login URL", async () => {
@@ -139,64 +193,122 @@ test("parseAndValidateStructuredOutput: reports a schema validation error for ma
   assert.match(result.error, /did not match the review schema/);
 });
 
-test("runAgyStructured: succeeds on the first attempt without retrying", async () => {
-  let calls = 0;
-  const spawnImpl = () => {
-    calls += 1;
-    const child = createFakeChild();
-    queueMicrotask(() => {
-      child.stdout.emit("data", Buffer.from('{"verdict":"approve","summary":"ok","findings":[],"next_steps":[]}'));
-      child.emit("close", 0, null);
-    });
-    return child;
-  };
-  const result = await runAgyStructured("/repo", { prompt: "review this", schema: SCHEMA, spawnImpl });
-  assert.equal(result.retried, false);
-  assert.equal(result.parsed.verdict, "approve");
-  assert.equal(calls, 1);
+function fakeEnvelope(overrides = {}) {
+  return JSON.stringify({
+    conversation_id: "conv-1",
+    status: "SUCCESS",
+    response: "ignored, structured_output is what matters",
+    structured_output: { verdict: "approve", summary: "ok", findings: [], next_steps: [] },
+    json_schema: SCHEMA,
+    usage: { input_tokens: 1, output_tokens: 1 },
+    ...overrides
+  });
+}
+
+test("runAgyStructured: throws synchronously if schemaPath is missing", async () => {
+  await assert.rejects(
+    runAgyStructured("/repo", { prompt: "review this", schema: SCHEMA }),
+    /requires options\.schemaPath/
+  );
 });
 
-test("runAgyStructured: retries once with --continue on malformed JSON, then succeeds", async () => {
+test("runAgyStructured: requests --output-format json and --json-schema, and returns the parsed envelope's structured_output on a single call", async () => {
   let calls = 0;
-  let secondCallArgs = null;
+  let capturedArgs = null;
   const spawnImpl = (command, args) => {
     calls += 1;
-    if (calls === 1) {
-      const child = createFakeChild();
-      queueMicrotask(() => {
-        child.stdout.emit("data", Buffer.from("not json"));
-        child.emit("close", 0, null);
-      });
-      return child;
-    }
-    secondCallArgs = args;
+    capturedArgs = args;
     const child = createFakeChild();
     queueMicrotask(() => {
-      child.stdout.emit("data", Buffer.from('{"verdict":"approve","summary":"ok","findings":[],"next_steps":[]}'));
+      child.stdout.emit("data", Buffer.from(fakeEnvelope()));
       child.emit("close", 0, null);
     });
     return child;
   };
-  const result = await runAgyStructured("/repo", { prompt: "review this", schema: SCHEMA, spawnImpl });
-  assert.equal(calls, 2);
-  assert.equal(result.retried, true);
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: "/tmp/review-schema.json",
+    spawnImpl
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.retried, false);
+  assert.equal(result.status, 0);
   assert.equal(result.parsed.verdict, "approve");
-  assert.ok(secondCallArgs.includes("--continue"));
+  assert.equal(result.conversationId, "conv-1");
+  assert.ok(capturedArgs.includes("--output-format"));
+  assert.ok(capturedArgs.includes("json"));
+  assert.ok(capturedArgs.includes("--json-schema"));
+  assert.ok(capturedArgs.includes("/tmp/review-schema.json"));
 });
 
-test("runAgyStructured: gives up after one retry and surfaces the parse error", async () => {
+test("runAgyStructured: surfaces a clear error when agy's envelope reports a non-SUCCESS status", async () => {
   const spawnImpl = () => {
     const child = createFakeChild();
     queueMicrotask(() => {
-      child.stdout.emit("data", Buffer.from("still not json"));
+      child.stdout.emit("data", Buffer.from(fakeEnvelope({ status: "FAILURE", structured_output: null })));
       child.emit("close", 0, null);
     });
     return child;
   };
-  const result = await runAgyStructured("/repo", { prompt: "review this", schema: SCHEMA, spawnImpl });
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: "/tmp/review-schema.json",
+    spawnImpl
+  });
   assert.equal(result.status, 1);
   assert.equal(result.parsed, null);
-  assert.match(result.parseError, /not valid JSON/);
+  assert.equal(result.conversationId, "conv-1");
+  assert.match(result.parseError, /status "FAILURE"/);
+});
+
+test("runAgyStructured: fails local re-validation if structured_output doesn't actually match the schema", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(fakeEnvelope({ structured_output: { verdict: "approve" } })));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: "/tmp/review-schema.json",
+    spawnImpl
+  });
+  assert.equal(result.status, 1);
+  assert.equal(result.parsed, null);
+  assert.match(result.parseError, /did not match the schema on local re-validation/);
+});
+
+test("runAgyStructured: surfaces a parse error if agy's stdout isn't a JSON envelope at all", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from("not json at all"));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: "/tmp/review-schema.json",
+    spawnImpl
+  });
+  assert.equal(result.status, 1);
+  assert.equal(result.parsed, null);
+  assert.equal(result.conversationId, null);
+});
+
+test("parseAgyEnvelope: parses a real agy --output-format json envelope shape", () => {
+  const result = parseAgyEnvelope(fakeEnvelope());
+  assert.equal(result.ok, true);
+  assert.equal(result.envelope.status, "SUCCESS");
+  assert.equal(result.envelope.conversation_id, "conv-1");
+  assert.equal(result.envelope.structured_output.verdict, "approve");
 });
 
 test("diffGitStatusSnapshots: reports files that appear or disappear between snapshots", () => {
