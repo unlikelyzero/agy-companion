@@ -4,7 +4,7 @@
 
 Two GitHub Actions workflows run automatically:
 
-- **`ci.yml`** — runs `npm test` on every push to `main` and every pull request, across Node 18/20/22/24. This covers everything mocked (see the next section) and needs no `agy` binary.
+- **`ci.yml`** — runs `npm test` on every push to `main` and every pull request, on Node 24. This covers everything mocked (see the next section) and needs no `agy` binary.
 - **`agy-release-probe.yml`** — nightly (and on manual dispatch), installs the latest `agy` via the official install script on a hosted runner, confirms the binary runs, and compares `agy --version` against `.github/agy-tested-version` (the last version verified by hand). When a newer version appears it opens a tracking issue prompting a manual compatibility pass.
 
 Live integration testing cannot run on hosted CI: agy's only auth is interactive Google OAuth (no API key or service-account path — tracked upstream in google-antigravity/antigravity-cli#78, where Google has said API-key auth is unsupported and points CI users at the separate Antigravity SDK). When the probe files a new-release issue, run the manual checklist below against the new version, then bump `.github/agy-tested-version`.
