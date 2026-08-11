@@ -14,6 +14,7 @@ import {
   parseAgyEnvelope,
   parseAndValidateStructuredOutput,
   readOutputSchema,
+  resolveAgyBinary,
   runAgyPrompt,
   runAgyStructured
 } from "../scripts/lib/agy.mjs";
@@ -144,7 +145,56 @@ test("runAgyPrompt: surfaces a clear message when the agy binary is missing", as
     });
     return child;
   };
-  await assert.rejects(runAgyPrompt("/repo", { prompt: "hi", spawnImpl }), /not installed or is not on PATH/);
+  await assert.rejects(
+    runAgyPrompt("/repo", { prompt: "hi", spawnImpl }),
+    /could not be found[\s\S]*non-login shell/
+  );
+});
+
+test("resolveAgyBinary: returns bare 'agy' when it is reachable via PATH", () => {
+  const sep = path.delimiter;
+  const binary = resolveAgyBinary({
+    env: { PATH: `/usr/bin${sep}/somewhere/bin` },
+    existsSync: (p) => p === path.join("/somewhere/bin", "agy")
+  });
+  assert.equal(binary, "agy");
+});
+
+test("resolveAgyBinary: falls back to ~/.local/bin-style install dirs when agy is not on PATH", () => {
+  const fallbackDir = path.join("/home/user", ".local", "bin");
+  const binary = resolveAgyBinary({
+    env: { PATH: "/usr/bin" },
+    fallbackDirs: [fallbackDir],
+    existsSync: (p) => p === path.join(fallbackDir, "agy")
+  });
+  assert.equal(binary, path.join(fallbackDir, "agy"));
+});
+
+test("resolveAgyBinary: returns bare 'agy' when nothing is found anywhere", () => {
+  const binary = resolveAgyBinary({
+    env: { PATH: "/usr/bin" },
+    fallbackDirs: ["/nowhere"],
+    existsSync: () => false
+  });
+  assert.equal(binary, "agy");
+});
+
+test("runAgyPrompt: spawns the fallback binary path when agy is missing from PATH", async () => {
+  let spawnedCommand = null;
+  const spawnImpl = (command) => {
+    spawnedCommand = command;
+    const child = createFakeChild();
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  };
+  const localBin = path.join(os.homedir(), ".local", "bin");
+  await runAgyPrompt("/repo", {
+    prompt: "hi",
+    spawnImpl,
+    env: { PATH: "/usr/bin" },
+    existsSyncImpl: (p) => p === path.join(localBin, "agy")
+  });
+  assert.equal(spawnedCommand, path.join(localBin, "agy"));
 });
 
 test("runAgyPrompt: rejects with AgyTimeoutError past the configured timeout", async () => {

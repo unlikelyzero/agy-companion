@@ -31,6 +31,8 @@
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { readJsonFile } from "./fs.mjs";
 import { binaryAvailable, runCommand } from "./process.mjs";
@@ -73,8 +75,69 @@ export class AgyUnsupportedFeatureError extends Error {
   }
 }
 
+/**
+ * Directories where the Antigravity CLI is commonly installed but which are
+ * often missing from the PATH of a non-login shell (Claude Code spawns its
+ * commands without sourcing ~/.zprofile / ~/.bash_profile, so PATH additions
+ * made there never apply).
+ */
+function agyFallbackDirs() {
+  return [
+    path.join(os.homedir(), ".local", "bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin"
+  ];
+}
+
+/**
+ * Resolves the `agy` executable to spawn. If a bare `agy` is reachable via
+ * the effective PATH, returns "agy" so spawning behaves exactly as before.
+ * Otherwise checks common install locations (see `agyFallbackDirs`) and
+ * returns the first absolute path that exists. Falls back to "agy" when
+ * nothing is found so the caller still gets a normal ENOENT with the
+ * remediation message below.
+ */
+export function resolveAgyBinary(options = {}) {
+  const env = options.env ?? process.env;
+  const existsImpl = options.existsSync ?? fs.existsSync;
+  const fallbackDirs = options.fallbackDirs ?? agyFallbackDirs();
+  const names = process.platform === "win32" ? ["agy.exe", "agy.cmd", "agy"] : ["agy"];
+
+  const pathDirs = String(env.PATH ?? env.Path ?? "")
+    .split(path.delimiter)
+    .filter(Boolean);
+  for (const dir of pathDirs) {
+    for (const name of names) {
+      if (existsImpl(path.join(dir, name))) {
+        return "agy";
+      }
+    }
+  }
+
+  for (const dir of fallbackDirs) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      if (existsImpl(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return "agy";
+}
+
+export function agyMissingBinaryMessage() {
+  return (
+    "agy CLI is not installed or could not be found. Checked PATH and common install " +
+    `locations (${agyFallbackDirs().join(", ")}). Note that Claude Code runs commands in a ` +
+    "non-login shell, so PATH entries added in ~/.zprofile or ~/.bash_profile may not apply — " +
+    "add agy's directory to PATH in ~/.zshrc (or an environment-level PATH), or install the " +
+    "Antigravity CLI, then rerun `/agy:setup`."
+  );
+}
+
 export function getAgyAvailability(cwd) {
-  return binaryAvailable("agy", ["--version"], { cwd });
+  return binaryAvailable(resolveAgyBinary(), ["--version"], { cwd });
 }
 
 /**
@@ -194,7 +257,10 @@ export function runAgyPrompt(cwd, options = {}) {
     let settled = false;
     let authAlreadyDetected = false;
 
-    const child = spawnImpl("agy", args, {
+    const binary =
+      options.agyBinary ??
+      resolveAgyBinary({ env: options.env ?? process.env, existsSync: options.existsSyncImpl });
+    const child = spawnImpl(binary, args, {
       cwd,
       env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"]
@@ -260,11 +326,7 @@ export function runAgyPrompt(cwd, options = {}) {
       settled = true;
       clearTimeout(timer);
       if (error?.code === "ENOENT") {
-        reject(
-          new Error(
-            "agy CLI is not installed or is not on PATH. Install the Antigravity CLI, then rerun `/agy:setup`."
-          )
-        );
+        reject(new Error(agyMissingBinaryMessage()));
         return;
       }
       reject(error);
