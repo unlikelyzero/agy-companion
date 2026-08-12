@@ -47,14 +47,19 @@ A finding should answer:
 
 <structured_output_contract>
 Return only valid JSON matching the provided schema.
+The top-level object must contain exactly these four keys: `verdict`, `summary`, `findings`, `next_steps`.
+The field is named `verdict` — never `status`, `outcome`, or any other name.
+`verdict` must be exactly `approve` or `needs-attention`.
+`next_steps` is required even when empty — return `[]` if there is nothing to do.
 Keep the output compact and specific.
 Use `needs-attention` if there is any material risk worth blocking on.
 Use `approve` only if you cannot support any substantive adversarial finding from the provided context.
 Every finding must include:
-- the affected file
+- `severity`: exactly one of `critical`, `high`, `medium`, `low` — this key is required on every finding
+- `file`: the affected file
 - `line_start` and `line_end`
-- a confidence score from 0 to 1
-- a concrete recommendation
+- `confidence`: a score from 0 to 1
+- `recommendation`: a concrete change
 Write the summary like a terse ship/no-ship assessment, not a neutral recap.
 </structured_output_contract>
 
