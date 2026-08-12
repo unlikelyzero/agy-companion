@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import {
   AgyAuthRequiredError,
+  normalizeReviewPayload,
   AgyTimeoutError,
   AgyUnsupportedFeatureError,
   diffGitStatusSnapshots,
@@ -201,6 +202,50 @@ test("parseAndValidateStructuredOutput: reports a schema validation error for ma
   assert.match(result.error, /did not match the review schema/);
 });
 
+// The near-miss payload observed in a real agy 1.1.11 (Gemini) run: a
+// top-level "status" instead of "verdict", no "next_steps", and a finding
+// with no "severity".
+function observedNearMissPayload() {
+  return {
+    status: "needs-attention",
+    summary: "Risky change.",
+    findings: [
+      {
+        title: "Unhandled failure path",
+        body: "The retry loop can drop work.",
+        file: "src/queue.js",
+        line_start: 10,
+        line_end: 20,
+        confidence: 0.8,
+        recommendation: "Persist the item before acking."
+      }
+    ]
+  };
+}
+
+test("normalizeReviewPayload: repairs the observed near-miss (status->verdict, default next_steps and severity)", () => {
+  const normalized = normalizeReviewPayload(observedNearMissPayload());
+  assert.equal(normalized.verdict, "needs-attention");
+  assert.equal(normalized.status, undefined);
+  assert.deepEqual(normalized.next_steps, []);
+  assert.equal(normalized.findings[0].severity, "medium");
+});
+
+test("normalizeReviewPayload: leaves a non-verdict status and an existing verdict alone", () => {
+  const untouched = normalizeReviewPayload({ status: "SUCCESS", verdict: "approve", summary: "ok", findings: [], next_steps: ["x"] });
+  assert.equal(untouched.status, "SUCCESS");
+  assert.equal(untouched.verdict, "approve");
+  assert.deepEqual(untouched.next_steps, ["x"]);
+});
+
+test("parseAndValidateStructuredOutput: accepts the observed near-miss payload after normalization", () => {
+  const result = parseAndValidateStructuredOutput(JSON.stringify(observedNearMissPayload()), SCHEMA);
+  assert.equal(result.ok, true);
+  assert.equal(result.data.verdict, "needs-attention");
+  assert.deepEqual(result.data.next_steps, []);
+  assert.equal(result.data.findings[0].severity, "medium");
+});
+
 function fakeEnvelope(overrides = {}) {
   return JSON.stringify({
     conversation_id: "conv-1",
@@ -309,6 +354,66 @@ test("runAgyStructured: surfaces a parse error if agy's stdout isn't a JSON enve
   assert.equal(result.status, 1);
   assert.equal(result.parsed, null);
   assert.equal(result.conversationId, null);
+});
+
+test("runAgyStructured: normalizes a near-miss structured_output inside a SUCCESS envelope", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(fakeEnvelope({ structured_output: observedNearMissPayload() })));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: "/tmp/review-schema.json",
+    spawnImpl
+  });
+  assert.equal(result.status, 0);
+  assert.equal(result.parsed.verdict, "needs-attention");
+  assert.deepEqual(result.parsed.next_steps, []);
+  assert.equal(result.parsed.findings[0].severity, "medium");
+});
+
+test("runAgyStructured: accepts a bare review payload emitted without the envelope wrapper", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(JSON.stringify(observedNearMissPayload())));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: "/tmp/review-schema.json",
+    spawnImpl
+  });
+  assert.equal(result.status, 0);
+  assert.equal(result.parsed.verdict, "needs-attention");
+});
+
+test("runAgyStructured: includes stderr in the parse error when agy produced no stdout", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stderr.emit("data", Buffer.from("model backend unavailable\n"));
+      child.emit("close", 1, null);
+    });
+    return child;
+  };
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: "/tmp/review-schema.json",
+    spawnImpl
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.parseError, /did not return any output/);
+  assert.match(result.parseError, /model backend unavailable/);
 });
 
 test("parseAgyEnvelope: parses a real agy --output-format json envelope shape", () => {

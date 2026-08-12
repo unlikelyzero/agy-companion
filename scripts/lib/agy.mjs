@@ -312,6 +312,39 @@ function extractJsonCandidate(text) {
   return trimmed;
 }
 
+const REVIEW_VERDICT_VALUES = ["approve", "needs-attention"];
+
+/**
+ * Repairs the near-miss review payloads Gemini emits in practice before
+ * strict schema validation rejects them (observed against a real agy 1.1.11
+ * run): a top-level `status` field where the schema wants `verdict`, a
+ * missing `next_steps` array, and findings without a `severity`. Only
+ * unambiguous repairs are made — a `status` value that isn't a valid verdict
+ * is left alone so validation still reports the real mismatch.
+ */
+export function normalizeReviewPayload(data) {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    return data;
+  }
+  const normalized = { ...data };
+  if (normalized.verdict === undefined && REVIEW_VERDICT_VALUES.includes(normalized.status)) {
+    normalized.verdict = normalized.status;
+    delete normalized.status;
+  }
+  if (normalized.next_steps === undefined) {
+    normalized.next_steps = [];
+  }
+  if (Array.isArray(normalized.findings)) {
+    normalized.findings = normalized.findings.map((finding) => {
+      if (finding === null || typeof finding !== "object" || Array.isArray(finding)) {
+        return finding;
+      }
+      return finding.severity === undefined ? { ...finding, severity: "medium" } : finding;
+    });
+  }
+  return normalized;
+}
+
 /**
  * Parses `rawOutput` as JSON and validates it against `schema`.
  * Returns `{ ok, data, error }`. Kept as a standalone helper — used both for
@@ -326,7 +359,7 @@ export function parseAndValidateStructuredOutput(rawOutput, schema) {
 
   let data;
   try {
-    data = JSON.parse(candidate);
+    data = normalizeReviewPayload(JSON.parse(candidate));
   } catch (error) {
     return { ok: false, data: null, error: `Response is not valid JSON: ${error.message}` };
   }
@@ -394,13 +427,14 @@ export async function runAgyStructured(cwd, options = {}) {
 
   const parsedEnvelope = parseAgyEnvelope(result.stdout);
   if (!parsedEnvelope.ok) {
+    const stderrHint = result.stderr ? ` stderr: ${result.stderr.split(/\r?\n/)[0]}` : "";
     return {
       status: 1,
       stdout: result.stdout,
       stderr: result.stderr,
       parsed: null,
       conversationId: null,
-      parseError: parsedEnvelope.error,
+      parseError: `${parsedEnvelope.error}${stderrHint}`,
       retried: false
     };
   }
@@ -409,6 +443,22 @@ export async function runAgyStructured(cwd, options = {}) {
   const conversationId = envelope.conversation_id ?? null;
 
   if (envelope.status !== "SUCCESS") {
+    // Some runs skip the envelope entirely and put the review payload at the
+    // top level of stdout, where its own "status"/"verdict" field collides
+    // with the envelope's SUCCESS status. If the top-level object itself
+    // validates as a review, accept it instead of failing on the envelope.
+    const bare = normalizeReviewPayload(envelope);
+    if (validateAgainstSchema(bare, options.schema).valid) {
+      return {
+        status: 0,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        parsed: bare,
+        conversationId,
+        parseError: null,
+        retried: false
+      };
+    }
     return {
       status: 1,
       stdout: result.stdout,
@@ -432,7 +482,8 @@ export async function runAgyStructured(cwd, options = {}) {
     };
   }
 
-  const { valid, errors } = validateAgainstSchema(envelope.structured_output, options.schema);
+  const structuredOutput = normalizeReviewPayload(envelope.structured_output);
+  const { valid, errors } = validateAgainstSchema(structuredOutput, options.schema);
   if (!valid) {
     return {
       status: 1,
@@ -449,7 +500,7 @@ export async function runAgyStructured(cwd, options = {}) {
     status: 0,
     stdout: result.stdout,
     stderr: result.stderr,
-    parsed: envelope.structured_output,
+    parsed: structuredOutput,
     conversationId,
     parseError: null,
     retried: false
