@@ -31,6 +31,8 @@
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { readJsonFile } from "./fs.mjs";
 import { binaryAvailable, runCommand } from "./process.mjs";
@@ -40,6 +42,25 @@ const AUTH_REQUIRED_PATTERN = /authentication required/i;
 const URL_PATTERN = /(https?:\/\/\S+)/;
 const DEFAULT_RUN_TIMEOUT_MS = 15 * 60 * 1000;
 const UPSTREAM_HEADLESS_AUTH_ISSUE = "https://github.com/google-antigravity/antigravity-cli/issues/78";
+const PACKAGE_ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const TESTED_VERSION_PATH = path.join(PACKAGE_ROOT, ".github", "agy-tested-version");
+
+/**
+ * `.github/agy-tested-version` is the single source of truth for "last agy
+ * version a human actually verified this plugin against" (see
+ * `docs/TESTING.md` and the nightly `agy-release-probe.yml` workflow that
+ * keeps it current). Reading it here, instead of hardcoding the version
+ * number in this error message, is what keeps the message accurate across
+ * version bumps — a hardcoded literal here previously went stale the moment
+ * `.github/agy-tested-version` was updated without a matching source edit.
+ */
+function readTestedAgyVersion() {
+  try {
+    return fs.readFileSync(TESTED_VERSION_PATH, "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 export class AgyAuthRequiredError extends Error {
   constructor(authUrl, rawOutput) {
@@ -63,9 +84,13 @@ export class AgyTimeoutError extends Error {
 
 export class AgyUnsupportedFeatureError extends Error {
   constructor(flag, stderr) {
+    const testedVersion = readTestedAgyVersion();
+    const testedClause = testedVersion
+      ? `tested against ${testedVersion}`
+      : "see .github/agy-tested-version for the last version tested";
     super(
       `This install of agy does not recognize \`${flag}\`. agy-companion requires a recent agy build ` +
-        `(tested against 1.1.11). Run \`agy update\`, then retry.`
+        `(${testedClause}). Run \`agy update\`, then retry.`
     );
     this.name = "AgyUnsupportedFeatureError";
     this.flag = flag;

@@ -113,6 +113,14 @@ test("runAgyPrompt: rejects with AgyUnsupportedFeatureError when --json-schema i
   );
 });
 
+test("AgyUnsupportedFeatureError: message reflects the current .github/agy-tested-version, not a hardcoded literal", () => {
+  const testedVersion = fs
+    .readFileSync(new URL("../.github/agy-tested-version", import.meta.url), "utf8")
+    .trim();
+  const error = new AgyUnsupportedFeatureError("--json-schema", "");
+  assert.match(error.message, new RegExp(`tested against ${testedVersion.replace(/\./g, "\\.")}`));
+});
+
 test("runAgyPrompt: rejects with AgyAuthRequiredError and captures the login URL", async () => {
   const spawnImpl = () => {
     const child = createFakeChild();
