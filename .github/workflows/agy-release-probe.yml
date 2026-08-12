@@ -5,8 +5,12 @@ name: agy release probe
 # live integration test. This probe does what IS possible unauthenticated:
 # install the latest agy via the official install script, confirm the binary
 # runs, and compare its version against .github/agy-tested-version (the last
-# version verified by hand per docs/TESTING.md). When a newer version appears,
-# it opens a tracking issue prompting a manual compatibility pass.
+# version verified by hand per docs/TESTING.md). It also diffs `agy --help`
+# against .github/agy-help-snapshot.txt, since a version-number bump alone
+# says nothing about *what* changed — new/removed flags or subcommands are a
+# much more direct signal of what a compatibility pass should actually look
+# at. When either the version or the --help output changed, it opens a
+# tracking issue prompting a manual compatibility pass.
 
 on:
   schedule:
@@ -49,24 +53,70 @@ jobs:
             echo "new_release=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Open tracking issue for new release
-        if: steps.compare.outputs.new_release == 'true'
+      - name: Diff `agy --help` against the last snapshot
+        id: help_diff
+        run: |
+          agy --help > /tmp/agy-help-current.txt 2>&1 || true
+          if diff -u .github/agy-help-snapshot.txt /tmp/agy-help-current.txt > /tmp/agy-help-diff.txt; then
+            echo "No changes in \`agy --help\` output."
+            echo "has_diff=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "agy --help output changed:"
+            cat /tmp/agy-help-diff.txt
+            echo "has_diff=true" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "diff<<EOF_HELP_DIFF"
+            cat /tmp/agy-help-diff.txt
+            echo "EOF_HELP_DIFF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open tracking issue for new release or capability change
+        if: steps.compare.outputs.new_release == 'true' || steps.help_diff.outputs.has_diff == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           LATEST: ${{ steps.version.outputs.latest }}
           TESTED: ${{ steps.compare.outputs.tested }}
+          NEW_RELEASE: ${{ steps.compare.outputs.new_release }}
+          HAS_HELP_DIFF: ${{ steps.help_diff.outputs.has_diff }}
+          HELP_DIFF: ${{ steps.help_diff.outputs.diff }}
         run: |
-          title="New agy release $LATEST needs a compatibility pass"
+          if [ "$NEW_RELEASE" = "true" ]; then
+            title="New agy release $LATEST needs a compatibility pass"
+          else
+            title="agy $LATEST changed its --help output without a version bump"
+          fi
           existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq 'length')"
           if [ "$existing" != "0" ]; then
             echo "Tracking issue already open, skipping."
             exit 0
           fi
-          body="The nightly probe found agy \`$LATEST\` available; the plugin was last verified against \`$TESTED\`.
+
+          if [ "$NEW_RELEASE" = "true" ]; then
+            version_line="The nightly probe found agy \`$LATEST\` available; the plugin was last verified against \`$TESTED\`."
+          else
+            version_line="The nightly probe found that \`agy --help\` output changed on the already-tested \`$LATEST\`, with no version bump to signal it."
+          fi
+
+          if [ "$HAS_HELP_DIFF" = "true" ]; then
+            help_section="\`agy --help\` output changed since the last snapshot (\`.github/agy-help-snapshot.txt\`) — this is the most direct signal of what actually needs checking, since a version bump alone doesn't say what changed:
+
+          \`\`\`diff
+          $HELP_DIFF
+          \`\`\`
+          "
+          else
+            help_section="\`agy --help\` output is unchanged from the last snapshot — this release likely only touched internals, not the CLI surface this plugin depends on."
+          fi
+
+          body="$version_line
+
+          $help_section
 
           agy has no non-interactive auth, so this cannot be tested on a hosted runner. To close this issue:
 
           1. Update agy locally (\`curl -fsSL https://antigravity.google/cli/install.sh | bash\`) and confirm \`agy --version\` reports \`$LATEST\`.
-          2. Run the manual checklist in \`docs/TESTING.md\` (at minimum: \`/agy:review --wait\` against a real diff, confirming the \`--output-format json --json-schema\` envelope still parses).
-          3. Update \`.github/agy-tested-version\` to \`$LATEST\` and commit."
+          2. Run \`agy changelog\` for any release notes (sparse in practice, but worth a look) and review the \`--help\` diff above for new/changed/removed flags or subcommands this plugin should adopt or account for.
+          3. Run the manual checklist in \`docs/TESTING.md\`, covering the full command lifecycle: \`/agy:review\` and \`/agy:adversarial-review\` (confirming the \`--output-format json --json-schema\` envelope still parses), \`/agy:rescue\` foreground and \`--background\`, \`/agy:status\`, \`/agy:result\`, \`/agy:cancel\`, and \`--resume-last\`.
+          4. Update \`.github/agy-tested-version\` to \`$LATEST\` and \`.github/agy-help-snapshot.txt\` to the current \`agy --help\` output, and commit both."
           gh issue create --title "$title" --body "$body"

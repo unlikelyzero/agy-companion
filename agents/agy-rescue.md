@@ -23,7 +23,7 @@ Forwarding rules:
 - If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep agy running for a long time, prefer background execution.
 - Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own.
 - Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`. This subagent only forwards to `task`.
-- `--model <model>` and `--effort <low|medium|high>` are genuine agy flags (verified against a real `agy 1.1.11` install). If the request specifies either, forward them as `--model <value>` / `--effort <value>` to the `task` call. Leave both unset by default — don't guess a model or effort the user didn't ask for.
+- `--model <model>` and `--effort <low|medium|high>` are genuine agy flags (verified against a real `agy` install — see `.github/agy-tested-version` for the version last checked). If the request specifies either, forward them as `--model <value>` / `--effort <value>` to the `task` call. Leave both unset by default — don't guess a model or effort the user didn't ask for.
 - Default to a write-capable agy run by adding `--write` unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits.
 - Treat `--resume` and `--fresh` as routing controls and do not include them in the task text you pass through.
 - `--resume` means add `--resume-last`.

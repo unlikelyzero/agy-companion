@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Compatibility pass against agy `1.1.12` (bumped from `1.1.11`), broadened to cover the full command lifecycle live for the first time: `/agy:review`, `/agy:adversarial-review`, `/agy:rescue` (foreground and background), `/agy:status`, `/agy:result`, `/agy:cancel` (confirmed to actually terminate the process), and `--resume-last` (confirmed to attach to a prior conversation, but with a caveat about which one — see `docs/TESTING.md`). `.github/agy-tested-version` is now `1.1.12`.
+- Added a capability-diff check to the nightly release probe: it now also diffs `agy --help` against a tracked snapshot (`.github/agy-help-snapshot.txt`) and includes the diff in the tracking issue, since a version-number bump alone says nothing about what actually changed in the CLI surface.
+- Stopped hardcoding the exact tested agy version as a literal string across README/docs/agent prompts, since that already drifted out of sync after the first version bump. Present-tense compatibility claims now point at `.github/agy-tested-version` instead of repeating the number; `AgyUnsupportedFeatureError`'s message reads that file at runtime so it can't go stale independently of it.
+- Resolved the `agy` binary via `PATH` with a fallback to common install directories (`~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`) when a non-login shell's `PATH` doesn't include it, and surfaced the resolved path through `/agy:setup`.
+- Tolerated near-miss structured-output payloads from `agy`'s Gemini backend (a top-level `status` field instead of `verdict`, a missing `next_steps` array, findings missing `severity`) instead of rejecting them outright, and tightened the review/adversarial-review prompt templates to spell out the exact field-name contract.
+
 ## 0.1.0
 
 - Initial release: `/agy:review`, `/agy:adversarial-review`, `/agy:rescue`, `/agy:status`, `/agy:result`, `/agy:cancel`, `/agy:setup`, the `agy-rescue` subagent, and the optional stop-time review gate.
