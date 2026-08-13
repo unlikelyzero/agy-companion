@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added a release pipeline. Pushing a `v*` tag now runs the tests, verifies the tag against the plugin manifests, builds release notes from this changelog, and publishes the GitHub release. `npm run version:set -- <version>` bumps all four version fields at once and promotes the `## Unreleased` section, and CI fails a pull request whose version fields disagree — Claude Code detects plugin updates from the manifests rather than from git tags, so a partial bump would otherwise publish a release that some users are never offered. See `docs/RELEASING.md`.
+
 - Compatibility pass against agy `1.1.12` (bumped from `1.1.11`), broadened to cover the full command lifecycle live for the first time: `/agy:review`, `/agy:adversarial-review`, `/agy:rescue` (foreground and background), `/agy:status`, `/agy:result`, `/agy:cancel` (confirmed to actually terminate the process), and `--resume-last` (confirmed to attach to a prior conversation, but with a caveat about which one — see `docs/TESTING.md`). `.github/agy-tested-version` is now `1.1.12`.
 - Added a capability-diff check to the nightly release probe: it now also diffs `agy --help` against a tracked snapshot (`.github/agy-help-snapshot.txt`) and includes the diff in the tracking issue, since a version-number bump alone says nothing about what actually changed in the CLI surface.
 - Stopped hardcoding the exact tested agy version as a literal string across README/docs/agent prompts, since that already drifted out of sync after the first version bump. Present-tense compatibility claims now point at `.github/agy-tested-version` instead of repeating the number; `AgyUnsupportedFeatureError`'s message reads that file at runtime so it can't go stale independently of it.
