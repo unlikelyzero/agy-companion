@@ -201,6 +201,10 @@ No. Every command that actually talks to `agy` requires you to complete `agy`'s 
 
 See [docs/TESTING.md](docs/TESTING.md) for what `npm test` covers (arg parsing, state, job control, rendering, process helpers, schema validation, and the agy transport layer with a mocked `child_process.spawn`) versus what still needs a human with a real, authenticated `agy` install to verify.
 
+## Releasing
+
+Releases are cut by pushing a `v*` tag, which publishes a GitHub release with notes taken from `CHANGELOG.md`. See [docs/RELEASING.md](docs/RELEASING.md) for the full process, including the four version fields that have to stay in sync and why.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

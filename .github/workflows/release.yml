@@ -1,0 +1,85 @@
+name: Release
+
+# Publishes a GitHub release when a `v*` tag is pushed.
+#
+# The tag is the trigger, but the manifests are the source of truth: Claude
+# Code decides whether an installed plugin is stale by reading the version in
+# `.claude-plugin/`, not by looking at git tags. So this job refuses to publish
+# a tag whose version doesn't match the manifests — otherwise the release would
+# exist while no user is ever offered the update.
+#
+# The usual flow:
+#   1. npm run version:set -- 0.2.0   (bumps all manifests, promotes CHANGELOG)
+#   2. open a PR with that bump, merge it to main
+#   3. git tag v0.2.0 && git push origin v0.2.0
+#
+# `workflow_dispatch` is available for re-running a release whose publish step
+# failed after the tag already existed.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish a release for (e.g. v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve the tag being released
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-${GITHUB_REF_NAME}}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # A release is the worst place to discover a broken test, and a tag can't
+      # be meaningfully un-published once consumers have fetched it.
+      - name: Run tests
+        run: npm test
+
+      - name: Verify the tag matches the plugin manifests
+        run: node scripts/version.mjs check "${{ steps.tag.outputs.tag }}"
+
+      # Fails the release when the section is empty, rather than publishing a
+      # release whose blank notes read as a deliberate "nothing changed".
+      - name: Build release notes from CHANGELOG.md
+        run: |
+          node scripts/version.mjs notes "${{ steps.tag.outputs.version }}" > release-notes.md
+          echo "--- release notes ---"
+          cat release-notes.md
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; updating its notes."
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file release-notes.md \
+              --verify-tag
+          fi

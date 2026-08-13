@@ -14,3 +14,9 @@ jobs:
         with:
           node-version: 24
       - run: npm test
+      # The plugin states its version in four places across three manifests, and
+      # Claude Code reads those (not the git tag) to detect updates. Catching a
+      # drifted field here keeps a half-bumped version from reaching main, where
+      # it would produce a release that some users are never offered.
+      - name: Check plugin version consistency
+        run: npm run version:check
