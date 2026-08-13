@@ -43,6 +43,7 @@ const URL_PATTERN = /(https?:\/\/\S+)/;
 const DEFAULT_RUN_TIMEOUT_MS = 15 * 60 * 1000;
 const UPSTREAM_HEADLESS_AUTH_ISSUE = "https://github.com/google-antigravity/antigravity-cli/issues/78";
 const AUTH_CHECK_TIMEOUT_MS = 20 * 1000;
+const TOOL_PROBE_TIMEOUT_MS = 90 * 1000;
 const SELECTABLE_LIST_TIMEOUT_MS = 20 * 1000;
 const PACKAGE_ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const TESTED_VERSION_PATH = path.join(PACKAGE_ROOT, ".github", "agy-tested-version");
@@ -178,6 +179,77 @@ export async function getAgyAuthStatus(cwd, options = {}) {
 }
 
 /**
+ * Probes whether headless tool calls actually work, by asking agy to run one
+ * trivial shell command in `--print` mode and checking whether the attempt is
+ * soft-denied.
+ *
+ * This exists because `getAgyAuthStatus` structurally cannot detect the
+ * problem: it probes with `/quota`, which agy answers as a print-mode slash
+ * command "without starting an agent turn" (its changelog's words). No agent
+ * turn means no tool call, which means no permission check — so a readiness
+ * report built only on that check happily said `ready: true` on an install
+ * where every `/agy:review` failed. This probe does start a turn, and is the
+ * only check here that exercises the path reviews actually depend on.
+ *
+ * It deliberately mirrors how commands actually run, passing
+ * `--dangerously-skip-permissions` exactly as the review and rescue paths do.
+ * Probing without the flag would answer a question nothing asks any more —
+ * bare headless tool calls have been soft-denied since agy 1.1.3, so that
+ * check would report a permanent failure on a perfectly working install.
+ *
+ * Costs one very short agent turn's quota, unlike the other setup checks.
+ */
+export async function probeHeadlessToolPermission(cwd, options = {}) {
+  const availability = options.availability ?? getAgyAvailability(cwd);
+  if (!availability.available) {
+    return { probed: false, ok: null, permission: null, detail: "agy is not installed." };
+  }
+
+  try {
+    const result = await runAgyPrompt(cwd, {
+      prompt:
+        "Use your terminal tool to run exactly `echo agy-permission-probe`, then reply with only the word OK.",
+      outputFormat: "json",
+      skipPermissions: true,
+      timeoutMs: options.timeoutMs ?? TOOL_PROBE_TIMEOUT_MS,
+      spawnImpl: options.spawnImpl,
+      env: options.env
+    });
+
+    const denial = detectHeadlessToolDenial(result.stderr);
+    if (denial) {
+      return {
+        probed: true,
+        ok: false,
+        permission: denial.permission,
+        detail:
+          `Headless tool calls are blocked: agy soft-denied the "${denial.permission}" permission even with ` +
+          "`--dangerously-skip-permissions`, which agy-companion passes on every review and rescue run. " +
+          "`/agy:review` and `/agy:adversarial-review` cannot return findings in this state."
+      };
+    }
+
+    return {
+      probed: true,
+      ok: true,
+      permission: null,
+      detail:
+        "Headless tool calls succeeded (probe ran one shell command through `agy --print` with " +
+        "`--dangerously-skip-permissions`, matching how reviews run)."
+    };
+  } catch (error) {
+    return {
+      probed: true,
+      ok: null,
+      permission: null,
+      detail: `Could not complete the headless tool-permission probe: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    };
+  }
+}
+
+/**
  * agy has no shared background runtime / broker (Codex's app-server can be
  * reused across commands via a broker socket). Every agy-companion command
  * spawns its own `agy --print` process, so this always reports the same
@@ -192,6 +264,63 @@ export function getSessionRuntimeStatus() {
     detail: "Each /agy:* command spawns its own `agy --print` process; there is no shared background runtime.",
     endpoint: null
   };
+}
+
+/**
+ * Since agy 1.1.3, a headless (`--print`) run "soft-denies" any tool call
+ * that would need an interactive confirmation: the run exits 0, the JSON
+ * envelope reports `"status":"SUCCESS"` with an empty `response` and no
+ * `structured_output`, and the only explanation is a one-line stderr
+ * notice. Read literally, that looks identical to "the model returned
+ * nothing useful" — which is how this surfaced before: `/agy:review`
+ * reported a bare parse failure and sent people looking for a schema bug
+ * that was never there.
+ *
+ * agy's changelog dates the behaviour precisely ("Fixed headless (`-p`)
+ * runs hanging or silently auto-approving tools that require a permission
+ * confirmation, so the CLI now soft-denies such tools" — 1.1.3). Before
+ * that, headless runs silently auto-approved, which is the behaviour this
+ * plugin was originally written against.
+ *
+ * The denial names the permission it wanted (`command`, `read_file`,
+ * `unsandboxed`, ...), which is worth surfacing: it says whether the model
+ * tried to shell out, read a file, or escape the sandbox.
+ */
+const HEADLESS_TOOL_DENIAL_PATTERN =
+  /a tool required the "([^"]+)" permission that headless mode cannot prompt for/i;
+
+export function detectHeadlessToolDenial(stderr) {
+  const text = String(stderr ?? "");
+  const match = text.match(HEADLESS_TOOL_DENIAL_PATTERN);
+  if (!match) {
+    return null;
+  }
+  return { permission: match[1], stderr: text.trim() };
+}
+
+/**
+ * The user-facing explanation for a soft-denial. Deliberately does NOT
+ * repeat agy's own "add an allow-rule under permissions.allow" advice as if
+ * it were a fix: in print mode that advice is unreliable. `permissions.allow`
+ * is reported upstream as ignored entirely by `--print`
+ * (google-antigravity/antigravity-cli#548, which also found `toolPermission:
+ * always-proceed` had no effect there), and where command rules do apply they
+ * match the full command string rather than an executable
+ * (google-antigravity/antigravity-cli#627), so no practical allow-list covers
+ * the varied commands a review runs.
+ */
+export function describeHeadlessToolDenial(denial) {
+  if (!denial) {
+    return null;
+  }
+  return (
+    `agy soft-denied a tool call that needed the "${denial.permission}" permission. ` +
+    "Headless `agy --print` runs cannot prompt for confirmation, so agy ended the turn with an " +
+    "empty response and exit 0 — this is agy 1.1.3+ behaviour, not a schema or parsing problem. " +
+    "agy-companion already passes `--dangerously-skip-permissions` on the review and rescue paths " +
+    "precisely to avoid this, so seeing it here means the flag did not take effect — check that " +
+    "`agy --version` is recent enough to support it."
+  );
 }
 
 export function readOutputSchema(schemaPath) {
@@ -212,7 +341,12 @@ function buildAgyArgs(options) {
   if (options.agent) {
     args.push("--agent", options.agent);
   }
-  if (options.write) {
+  // `write` implies the flag (a rescue run has to be able to edit); `skipPermissions`
+  // requests it on its own, for read-only work that still needs tool calls to run at
+  // all. Since agy 1.1.3 this flag is the only reliable way to get *any* tool call
+  // through a headless run — see `describeHeadlessToolDenial` for why the documented
+  // `permissions.allow` alternative isn't one.
+  if (options.write || options.skipPermissions) {
     args.push("--dangerously-skip-permissions");
   }
   if (options.mode) {
@@ -499,6 +633,8 @@ export async function runAgyStructured(cwd, options = {}) {
     jsonSchemaPath: options.schemaPath
   });
 
+  const toolDenial = detectHeadlessToolDenial(result.stderr);
+
   const parsedEnvelope = parseAgyEnvelope(result.stdout);
   if (!parsedEnvelope.ok) {
     const stderrHint = result.stderr ? ` stderr: ${result.stderr.split(/\r?\n/)[0]}` : "";
@@ -508,7 +644,10 @@ export async function runAgyStructured(cwd, options = {}) {
       stderr: result.stderr,
       parsed: null,
       conversationId: null,
-      parseError: `${parsedEnvelope.error}${stderrHint}`,
+      toolDenial,
+      parseError: toolDenial
+        ? describeHeadlessToolDenial(toolDenial)
+        : `${parsedEnvelope.error}${stderrHint}`,
       retried: false
     };
   }
@@ -533,13 +672,21 @@ export async function runAgyStructured(cwd, options = {}) {
         retried: false
       };
     }
+    // agy puts the real reason in the envelope's `error` field — quota
+    // exhaustion ("RESOURCE_EXHAUSTED (code 429)"), backend failures, and so
+    // on. Reporting only the status and dumping the raw envelope buries a
+    // perfectly clear message under a "parse error" heading that sends people
+    // looking for a malformed-output bug instead of, say, topping up quota.
+    const envelopeError = typeof envelope.error === "string" ? envelope.error.trim() : "";
     return {
       status: 1,
       stdout: result.stdout,
       stderr: result.stderr,
       parsed: null,
       conversationId,
-      parseError: `agy reported status "${envelope.status ?? "unknown"}" instead of SUCCESS.`,
+      parseError: envelopeError
+        ? `agy failed to run this request: ${envelopeError}`
+        : `agy reported status "${envelope.status ?? "unknown"}" instead of SUCCESS.`,
       retried: false
     };
   }
@@ -551,7 +698,10 @@ export async function runAgyStructured(cwd, options = {}) {
       stderr: result.stderr,
       parsed: null,
       conversationId,
-      parseError: "agy reported SUCCESS but returned no structured_output.",
+      toolDenial,
+      parseError: toolDenial
+        ? describeHeadlessToolDenial(toolDenial)
+        : "agy reported SUCCESS but returned no structured_output.",
       retried: false
     };
   }

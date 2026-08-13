@@ -10,6 +10,8 @@ import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import {
   AgyAuthRequiredError,
   captureGitStatusSnapshot,
+  describeHeadlessToolDenial,
+  detectHeadlessToolDenial,
   diffGitStatusSnapshots,
   findUnknownEntryId,
   getAgyAuthStatus,
@@ -17,6 +19,7 @@ import {
   getSessionRuntimeStatus,
   listAgyAgents,
   listAgyModels,
+  probeHeadlessToolPermission,
   readOutputSchema,
   runAgyPrompt,
   runAgyStructured
@@ -68,7 +71,7 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/agy-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
+      "  node scripts/agy-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--skip-tool-probe] [--json]",
       "  node scripts/agy-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/agy-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/agy-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model>] [--effort <low|medium|high>] [--agent <agent>] [--mode <accept-edits|plan>] [prompt]",
@@ -152,13 +155,28 @@ function ensureAgyAvailable(cwd) {
   }
 }
 
-async function buildSetupReport(cwd, actionsTaken = []) {
+async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
   const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
   const agyStatus = getAgyAvailability(cwd);
   const authStatus = await getAgyAuthStatus(cwd);
   const config = getConfig(workspaceRoot);
+
+  // Only probe once agy is known to be signed in: the probe starts a real
+  // agent turn, so running it against a signed-out install just reports the
+  // auth failure a second time.
+  const shouldProbe = options.probeToolPermission !== false && agyStatus.available && authStatus.loggedIn === true;
+  const toolPermission = shouldProbe
+    ? await probeHeadlessToolPermission(cwd, { availability: agyStatus })
+    : {
+        probed: false,
+        ok: null,
+        permission: null,
+        detail: agyStatus.available
+          ? "Not probed (skipped, or agy is not confirmed signed in)."
+          : "agy is not installed."
+      };
 
   const nextSteps = [];
   if (!agyStatus.available) {
@@ -168,16 +186,28 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   } else if (authStatus.loggedIn === null) {
     nextSteps.push(`Could not confirm agy's login state (${authStatus.detail}). Run a real command such as /agy:review — it will report the OAuth URL if login is required.`);
   }
+  if (toolPermission.ok === false) {
+    nextSteps.push(
+      "Headless tool calls are soft-denied by this agy install even with " +
+        "`--dangerously-skip-permissions`, so `/agy:review` and `/agy:adversarial-review` cannot return " +
+        "findings. Confirm `agy --version` is recent enough to honor the flag; related upstream reports: " +
+        "google-antigravity/antigravity-cli#548."
+    );
+  }
   if (!config.stopReviewGate) {
     nextSteps.push("Optional: run `/agy:setup --enable-review-gate` to require a fresh review before stop.");
   }
 
   return {
-    ready: nodeStatus.available && agyStatus.available,
+    // `ready` deliberately requires the tool-permission probe to have passed.
+    // Reporting ready on availability alone is what let a completely broken
+    // review path look healthy.
+    ready: nodeStatus.available && agyStatus.available && toolPermission.ok === true,
     node: nodeStatus,
     npm: npmStatus,
     agy: agyStatus,
     auth: authStatus,
+    toolPermission,
     sessionRuntime: getSessionRuntimeStatus(),
     reviewGateEnabled: Boolean(config.stopReviewGate),
     actionsTaken,
@@ -188,7 +218,7 @@ async function buildSetupReport(cwd, actionsTaken = []) {
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "skip-tool-probe"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -207,7 +237,9 @@ async function handleSetup(argv) {
     actionsTaken.push(`Disabled the stop-time review gate for ${workspaceRoot}.`);
   }
 
-  const finalReport = await buildSetupReport(cwd, actionsTaken);
+  const finalReport = await buildSetupReport(cwd, actionsTaken, {
+    probeToolPermission: !options["skip-tool-probe"]
+  });
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
@@ -294,16 +326,30 @@ async function executeReviewRun(request) {
   const templateName = reviewName === "Review" ? "review" : "adversarial-review";
   const prompt = buildReviewPrompt(templateName, context, focusText);
 
+  // A review is read-only by intent, but `--dangerously-skip-permissions` is the only
+  // thing that gets a headless tool call past agy 1.1.3+'s soft-deny, and it approves
+  // writes too. Snapshot the worktree either side of the run so a review that edits
+  // anything is reported loudly rather than passing silently.
+  const beforeSnapshot = captureGitStatusSnapshot(context.repoRoot);
+
   const result = await runAgyStructured(context.repoRoot, {
     prompt,
     schema: REVIEW_SCHEMA,
     schemaPath: REVIEW_SCHEMA_PATH,
     write: false,
+    skipPermissions: true,
     onProgress: request.onProgress,
     tailFile: request.tailFile
   });
 
-  const parsed = { parsed: result.parsed, parseError: result.parseError, rawOutput: result.stdout };
+  const unexpectedWrites = diffGitStatusSnapshots(beforeSnapshot, captureGitStatusSnapshot(context.repoRoot));
+
+  const parsed = {
+    parsed: result.parsed,
+    parseError: result.parseError,
+    toolDenial: result.toolDenial ?? null,
+    rawOutput: result.stdout
+  };
   const payload = {
     review: reviewName,
     target,
@@ -320,6 +366,8 @@ async function executeReviewRun(request) {
     result: parsed.parsed,
     rawOutput: parsed.rawOutput,
     parseError: parsed.parseError,
+    toolDenial: parsed.toolDenial,
+    unexpectedWrites,
     conversationId: result.conversationId ?? null,
     retried: result.retried
   };
@@ -330,7 +378,8 @@ async function executeReviewRun(request) {
     payload,
     rendered: renderReviewResult(parsed, {
       reviewLabel: reviewName,
-      targetLabel: context.target.label
+      targetLabel: context.target.label,
+      unexpectedWrites
     }),
     summary: parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.stdout, `${reviewName} finished.`),
     jobTitle: `agy ${reviewName}`,
@@ -369,12 +418,21 @@ async function executeTaskRun(request) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
 
-  const beforeSnapshot = request.write ? captureGitStatusSnapshot(workspaceRoot) : null;
+  // Snapshot unconditionally. A read-only run still needs
+  // `--dangerously-skip-permissions` to make any tool call at all (agy 1.1.3+
+  // soft-denies otherwise), and that flag approves writes as well — so
+  // "read-only" is an intent, not an enforced guarantee, and the only way to
+  // know it held is to diff the worktree either side of the run.
+  const beforeSnapshot = captureGitStatusSnapshot(workspaceRoot);
 
   const result = await runAgyPrompt(workspaceRoot, {
     prompt,
     continueLatest: Boolean(request.resumeLast),
     write: Boolean(request.write),
+    // Read-only runs need the flag too: without it a diagnostic task soft-denies
+    // on its first tool call and returns nothing. That is what silently broke the
+    // stop-time review gate, which shells out to `task` with no `--write`.
+    skipPermissions: true,
     model: request.model || undefined,
     effort: request.effort || undefined,
     agent: request.agent || undefined,
@@ -383,19 +441,22 @@ async function executeTaskRun(request) {
     tailFile: request.tailFile
   });
 
-  const afterSnapshot = request.write ? captureGitStatusSnapshot(workspaceRoot) : null;
-  const touchedFiles = diffGitStatusSnapshots(beforeSnapshot, afterSnapshot);
+  const touchedFiles = diffGitStatusSnapshots(beforeSnapshot, captureGitStatusSnapshot(workspaceRoot));
+  // Files changed by a run that was never meant to edit anything.
+  const unexpectedWrites = request.write ? [] : touchedFiles;
 
   const rawOutput = typeof result.stdout === "string" ? result.stdout : "";
-  const failureMessage = result.stderr ?? "";
+  const toolDenial = detectHeadlessToolDenial(result.stderr);
+  const failureMessage = toolDenial ? describeHeadlessToolDenial(toolDenial) : result.stderr ?? "";
   const rendered = renderTaskResult(
     { rawOutput, failureMessage },
-    { title: taskMetadata.title, jobId: request.jobId ?? null, write: Boolean(request.write) }
+    { title: taskMetadata.title, jobId: request.jobId ?? null, write: Boolean(request.write), unexpectedWrites }
   );
   const payload = {
     status: result.status,
     rawOutput,
-    touchedFiles
+    touchedFiles,
+    unexpectedWrites
   };
 
   return {
