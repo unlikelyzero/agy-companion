@@ -4,21 +4,45 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-async function withIsolatedWorkspace(fn) {
+const SESSION_ID_ENV = "AGY_COMPANION_SESSION_ID";
+
+/**
+ * `sessionId` is deliberately cleared here. job-control scopes "active" jobs
+ * to the current session via `AGY_COMPANION_SESSION_ID`, and the fixtures
+ * below create jobs with no `sessionId` — so whenever that variable happens
+ * to be set in the ambient environment, every fixture job is filtered out and
+ * the running/queued assertions fail. That is exactly what happens on a
+ * machine with the agy-companion plugin installed (its session hook exports
+ * the variable) while hosted CI, which never sets it, stays green. Tests must
+ * not depend on which of those two environments they run in; session scoping
+ * is covered explicitly instead, further down.
+ */
+async function withIsolatedWorkspace(fn, { sessionId = null } = {}) {
   const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "agy-companion-test-"));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "agy-companion-repo-"));
-  const previous = process.env.CLAUDE_PLUGIN_DATA;
+  const previousPluginData = process.env.CLAUDE_PLUGIN_DATA;
+  const previousSessionId = process.env[SESSION_ID_ENV];
   process.env.CLAUDE_PLUGIN_DATA = pluginData;
+  if (sessionId === null) {
+    delete process.env[SESSION_ID_ENV];
+  } else {
+    process.env[SESSION_ID_ENV] = sessionId;
+  }
   try {
     const suffix = `?t=${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const state = await import(`../scripts/lib/state.mjs${suffix}`);
     const jobControl = await import(`../scripts/lib/job-control.mjs${suffix}`);
     return await fn({ cwd, state, jobControl });
   } finally {
-    if (previous === undefined) {
+    if (previousPluginData === undefined) {
       delete process.env.CLAUDE_PLUGIN_DATA;
     } else {
-      process.env.CLAUDE_PLUGIN_DATA = previous;
+      process.env.CLAUDE_PLUGIN_DATA = previousPluginData;
+    }
+    if (previousSessionId === undefined) {
+      delete process.env[SESSION_ID_ENV];
+    } else {
+      process.env[SESSION_ID_ENV] = previousSessionId;
     }
     fs.rmSync(pluginData, { recursive: true, force: true });
     fs.rmSync(cwd, { recursive: true, force: true });
@@ -87,6 +111,36 @@ test("job-control: resolveResultJob rejects with no finished jobs at all when ca
     state.upsertJob(cwd, { id: "task-1", status: "running", jobClass: "task" });
     assert.throws(() => jobControl.resolveResultJob(cwd, ""), /still running/);
   });
+});
+
+test("job-control: active-job views are scoped to the current session", async () => {
+  await withIsolatedWorkspace(
+    async ({ cwd, state, jobControl }) => {
+      state.upsertJob(cwd, { id: "task-mine", status: "running", jobClass: "task", sessionId: "session-a" });
+      state.upsertJob(cwd, { id: "task-theirs", status: "running", jobClass: "task", sessionId: "session-b" });
+
+      const snapshot = jobControl.buildStatusSnapshot(cwd);
+      assert.deepEqual(
+        snapshot.running.map((job) => job.id),
+        ["task-mine"]
+      );
+
+      // Only one job belongs to this session, so no id is required to cancel it.
+      assert.equal(jobControl.resolveCancelableJob(cwd, "").job.id, "task-mine");
+    },
+    { sessionId: "session-a" }
+  );
+});
+
+test("job-control: an explicit reference reaches jobs from another session", async () => {
+  await withIsolatedWorkspace(
+    async ({ cwd, state, jobControl }) => {
+      state.upsertJob(cwd, { id: "task-theirs", status: "completed", jobClass: "task", sessionId: "session-b" });
+      // Session scoping applies to the no-reference views; naming a job explicitly still finds it.
+      assert.equal(jobControl.buildSingleJobSnapshot(cwd, "task-theirs").job.id, "task-theirs");
+    },
+    { sessionId: "session-a" }
+  );
 });
 
 test("job-control: enrichJob labels jobs by kind and jobClass", async () => {

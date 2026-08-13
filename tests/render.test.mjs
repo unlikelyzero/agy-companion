@@ -64,6 +64,100 @@ test("renderTaskResult: prefers raw output, falls back to failure message", () =
   assert.equal(renderTaskResult({}, {}), "agy did not return a final message.\n");
 });
 
+test("renderReviewResult: reports a soft-denied tool call as a permission failure, not bad JSON", () => {
+  const output = renderReviewResult(
+    {
+      parsed: null,
+      parseError: 'agy soft-denied a tool call that needed the "command" permission.',
+      toolDenial: { permission: "command", stderr: "jetski: no output produced ..." },
+      rawOutput: '{"status":"SUCCESS","response":""}'
+    },
+    { reviewLabel: "Review", targetLabel: "branch diff against main" }
+  );
+  assert.match(output, /a tool call was denied/);
+  assert.match(output, /Permission requested: `command`/);
+  assert.doesNotMatch(output, /did not return valid structured JSON/);
+});
+
+// Regression: the denial message alone isn't enough — renderReviewResult
+// picks its branch on `toolDenial`, so a caller that forwards parseError but
+// drops toolDenial still renders the misleading "did not return valid
+// structured JSON" heading. That shipped briefly and only a live run caught it.
+test("renderReviewResult: falls back to the parse-error branch when toolDenial is dropped", () => {
+  const output = renderReviewResult(
+    {
+      parsed: null,
+      parseError: 'agy soft-denied a tool call that needed the "command" permission.',
+      rawOutput: '{"status":"SUCCESS","response":""}'
+    },
+    { reviewLabel: "Review", targetLabel: "branch diff against main" }
+  );
+  // Documents the coupling: without toolDenial the denial-specific heading is
+  // unreachable, so callers must forward the field.
+  assert.match(output, /did not return valid structured JSON/);
+  assert.doesNotMatch(output, /a tool call was denied/);
+});
+
+test("renderTaskResult: warns when a read-only task run modified the worktree", () => {
+  const output = renderTaskResult(
+    { rawOutput: "diagnosis complete" },
+    { title: "rescue", unexpectedWrites: ["src/oops.ts"] }
+  );
+  assert.match(output, /\[!WARNING\]/);
+  assert.match(output, /src\/oops\.ts/);
+  assert.ok(output.indexOf("[!WARNING]") < output.indexOf("diagnosis complete"));
+});
+
+test("renderTaskResult: stays quiet for a write run that legitimately edited files", () => {
+  const output = renderTaskResult(
+    { rawOutput: "done" },
+    { title: "rescue", write: true, unexpectedWrites: [] }
+  );
+  assert.doesNotMatch(output, /WARNING/);
+});
+
+test("renderReviewResult: warns loudly when a read-only review modified the worktree", () => {
+  const output = renderReviewResult(
+    {
+      parsed: {
+        verdict: "approve",
+        summary: "Looks fine.",
+        findings: [],
+        next_steps: []
+      }
+    },
+    {
+      reviewLabel: "Review",
+      targetLabel: "branch diff against main",
+      unexpectedWrites: ["src/touched.ts", "README.md"]
+    }
+  );
+  assert.match(output, /\[!WARNING\]/);
+  assert.match(output, /modified the working tree/);
+  assert.match(output, /src\/touched\.ts/);
+  assert.match(output, /README\.md/);
+  // The banner has to lead, or it gets buried under findings.
+  assert.ok(output.indexOf("[!WARNING]") < output.indexOf("Looks fine."));
+});
+
+test("renderReviewResult: stays quiet when the review touched nothing", () => {
+  const parsed = {
+    parsed: { verdict: "approve", summary: "Looks fine.", findings: [], next_steps: [] }
+  };
+  const meta = { reviewLabel: "Review", targetLabel: "branch diff against main" };
+  assert.doesNotMatch(renderReviewResult(parsed, meta), /WARNING/);
+  assert.doesNotMatch(renderReviewResult(parsed, { ...meta, unexpectedWrites: [] }), /WARNING/);
+});
+
+test("renderReviewResult: surfaces unexpected writes even when the review itself failed", () => {
+  const output = renderReviewResult(
+    { parsed: null, parseError: "agy reported status \"ERROR\" instead of SUCCESS.", rawOutput: "{}" },
+    { reviewLabel: "Review", targetLabel: "t", unexpectedWrites: ["src/touched.ts"] }
+  );
+  assert.match(output, /\[!WARNING\]/);
+  assert.match(output, /src\/touched\.ts/);
+});
+
 test("renderSetupReport: lists checks, actions taken, and next steps", () => {
   const output = renderSetupReport({
     ready: false,
@@ -71,6 +165,7 @@ test("renderSetupReport: lists checks, actions taken, and next steps", () => {
     npm: { detail: "10.0.0" },
     agy: { detail: "not found" },
     auth: { detail: "unknown" },
+    toolPermission: { ok: null, detail: "agy is not installed." },
     sessionRuntime: { label: "direct invocation" },
     reviewGateEnabled: false,
     actionsTaken: ["Enabled the stop-time review gate for /repo."],

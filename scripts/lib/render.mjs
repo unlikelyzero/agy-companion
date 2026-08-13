@@ -163,6 +163,9 @@ export function renderSetupReport(report) {
     `- npm: ${report.npm.detail}`,
     `- agy: ${report.agy.detail}`,
     `- auth: ${report.auth.loggedIn === true ? "signed in" : report.auth.loggedIn === false ? "not signed in" : "unknown"} — ${report.auth.detail}`,
+    `- headless tool calls: ${
+      report.toolPermission.ok === true ? "working" : report.toolPermission.ok === false ? "BLOCKED" : "unknown"
+    } — ${report.toolPermission.detail}`,
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     ""
@@ -186,8 +189,52 @@ export function renderSetupReport(report) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
+/**
+ * Reviews run with `--dangerously-skip-permissions`, because since agy 1.1.3
+ * nothing else gets a tool call through a headless run. That flag approves
+ * writes as well as reads, so a review *can* modify the worktree even though
+ * it is only ever asked to read. This banner is the check on that: it leads
+ * the output, so an unexpected edit can't be missed under a wall of findings.
+ */
+function formatUnexpectedWrites(unexpectedWrites, subject = "review") {
+  if (!Array.isArray(unexpectedWrites) || unexpectedWrites.length === 0) {
+    return "";
+  }
+  const lines = [
+    "> [!WARNING]",
+    `> This ${subject} modified the working tree, which a read-only ${subject} should never do.`,
+    `> Read-only runs still pass \`--dangerously-skip-permissions\` (the only way agy allows`,
+    "> headless tool calls), so writes are approved along with reads. Inspect and",
+    "> revert these paths before trusting the result:",
+    ">"
+  ];
+  for (const file of unexpectedWrites) {
+    lines.push(`> - \`${file}\``);
+  }
+  return `${lines.join("\n")}\n\n`;
+}
+
 export function renderReviewResult(parsedResult, meta) {
+  const body = renderReviewResultBody(parsedResult, meta);
+  return `${formatUnexpectedWrites(meta?.unexpectedWrites)}${body}`;
+}
+
+function renderReviewResultBody(parsedResult, meta) {
   if (!parsedResult.parsed) {
+    // A soft-denied tool call is not a malformed-output problem, and framing
+    // it as one sends people hunting for a schema bug that isn't there.
+    if (parsedResult.toolDenial) {
+      const lines = [
+        `# agy ${meta.reviewLabel}`,
+        "",
+        "agy could not run this review: a tool call was denied.",
+        "",
+        `- ${parsedResult.parseError}`,
+        `- Permission requested: \`${parsedResult.toolDenial.permission}\``
+      ];
+      return `${lines.join("\n").trimEnd()}\n`;
+    }
+
     const lines = [`# agy ${meta.reviewLabel}`, "", "agy did not return valid structured JSON.", "", `- Parse error: ${parsedResult.parseError}`];
 
     if (parsedResult.rawOutput) {
@@ -244,13 +291,14 @@ export function renderReviewResult(parsedResult, meta) {
 }
 
 export function renderTaskResult(parsedResult, meta) {
+  const banner = formatUnexpectedWrites(meta?.unexpectedWrites, "run");
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
   if (rawOutput) {
-    return rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    return `${banner}${rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`}`;
   }
 
   const message = String(parsedResult?.failureMessage ?? "").trim() || "agy did not return a final message.";
-  return `${message}\n`;
+  return `${banner}${message}\n`;
 }
 
 export function renderStatusReport(report) {

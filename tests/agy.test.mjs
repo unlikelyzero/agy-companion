@@ -10,6 +10,8 @@ import {
   normalizeReviewPayload,
   AgyTimeoutError,
   AgyUnsupportedFeatureError,
+  describeHeadlessToolDenial,
+  detectHeadlessToolDenial,
   diffGitStatusSnapshots,
   findUnknownEntryId,
   getAgyAuthStatus,
@@ -45,6 +47,132 @@ function fakeSpawnThatSucceeds(stdoutText, { exitCode = 0 } = {}) {
     return child;
   };
 }
+
+// Verbatim stderr from a real agy 1.1.12 headless review run.
+const REAL_SOFT_DENY_STDERR =
+  'jetski: no output produced — a tool required the "command" permission that headless mode cannot ' +
+  "prompt for, so it was auto-denied. Add an allow-rule under permissions.allow in settings.json " +
+  "(e.g. command(<target>)). Alternatively, re-run with --dangerously-skip-permissions to auto-approve all tools.";
+
+test("runAgyPrompt: skipPermissions emits the flag without implying a write run", async () => {
+  let capturedArgs = null;
+  const spawnImpl = (command, args) => {
+    capturedArgs = args;
+    const child = createFakeChild();
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  };
+  await runAgyPrompt("/repo", { prompt: "review", skipPermissions: true, spawnImpl });
+  assert.deepEqual(capturedArgs, ["--print", "review", "--dangerously-skip-permissions"]);
+});
+
+test("runAgyPrompt: write and skipPermissions together emit the flag only once", async () => {
+  let capturedArgs = null;
+  const spawnImpl = (command, args) => {
+    capturedArgs = args;
+    const child = createFakeChild();
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  };
+  await runAgyPrompt("/repo", { prompt: "go", write: true, skipPermissions: true, spawnImpl });
+  assert.equal(capturedArgs.filter((arg) => arg === "--dangerously-skip-permissions").length, 1);
+});
+
+test("detectHeadlessToolDenial: recognizes a real soft-deny and names the permission", () => {
+  const denial = detectHeadlessToolDenial(REAL_SOFT_DENY_STDERR);
+  assert.equal(denial?.permission, "command");
+  assert.match(describeHeadlessToolDenial(denial), /soft-denied/);
+});
+
+test("detectHeadlessToolDenial: recognizes the read_file and unsandboxed variants", () => {
+  for (const permission of ["read_file", "unsandboxed"]) {
+    const stderr = `jetski: no output produced — a tool required the "${permission}" permission that headless mode cannot prompt for, so it was auto-denied.`;
+    assert.equal(detectHeadlessToolDenial(stderr)?.permission, permission);
+  }
+});
+
+test("detectHeadlessToolDenial: ignores unrelated stderr", () => {
+  assert.equal(detectHeadlessToolDenial(""), null);
+  assert.equal(detectHeadlessToolDenial("some unrelated warning"), null);
+  assert.equal(detectHeadlessToolDenial(undefined), null);
+});
+
+test("runAgyStructured: surfaces agy's own error text instead of a bare status mismatch", async () => {
+  // Verbatim envelope from a real quota-exhausted agy 1.1.12 run.
+  const envelope = JSON.stringify({
+    conversation_id: "",
+    status: "ERROR",
+    response: "",
+    error: "Eligibility check failed: RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota)."
+  });
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(envelope));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: SCHEMA_PATH,
+    spawnImpl
+  });
+
+  assert.equal(result.parsed, null);
+  assert.match(result.parseError, /RESOURCE_EXHAUSTED/);
+  assert.doesNotMatch(result.parseError, /instead of SUCCESS/);
+});
+
+test("runAgyStructured: falls back to the status message when agy gives no error text", async () => {
+  const envelope = JSON.stringify({ conversation_id: "x", status: "ERROR", response: "" });
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(envelope));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: SCHEMA_PATH,
+    spawnImpl
+  });
+
+  assert.match(result.parseError, /instead of SUCCESS/);
+});
+
+test("runAgyStructured: reports a soft-denied tool call instead of a bare parse failure", async () => {
+  // agy's real shape for this case: exit 0, SUCCESS envelope, empty response,
+  // no structured_output — indistinguishable from "bad output" without stderr.
+  const envelope = JSON.stringify({ conversation_id: "abc123", status: "SUCCESS", response: "" });
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(envelope));
+      child.stderr.emit("data", Buffer.from(REAL_SOFT_DENY_STDERR));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: SCHEMA_PATH,
+    spawnImpl
+  });
+
+  assert.equal(result.parsed, null);
+  assert.equal(result.toolDenial?.permission, "command");
+  assert.match(result.parseError, /soft-denied/);
+  assert.doesNotMatch(result.parseError, /no structured_output/);
+});
 
 test("runAgyPrompt: resolves with captured stdout/stderr on a clean exit", async () => {
   const spawnImpl = fakeSpawnThatSucceeds("all done\n");
