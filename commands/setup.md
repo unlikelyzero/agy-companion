@@ -12,6 +12,6 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" setup --json $ARGUMENTS
 
 Output rules:
 - Present the setup output to the user.
-- agy has no headless way to check login state (unlike Codex's `account/read`), so this command can only confirm the `agy` binary is installed. If the report says agy is missing, tell the user to install the Antigravity CLI and rerun `/agy:setup`.
-- If agy is installed, tell the user that login is only confirmed by running a real command (`/agy:review`, `/agy:rescue`, etc.) — if agy needs Google OAuth login, it will report a login URL through `/agy:status` for that job instead of hanging.
-- Do not attempt to run `agy login` or any interactive login flow yourself; agy 1.0.1 has no non-interactive login path.
+- If the report says agy is missing, tell the user to install the Antigravity CLI and rerun `/agy:setup`.
+- If agy is installed, the report's `auth` field reflects a real, free login check (`agy -p "/quota" --output-format json`, a print-mode command that spends no quota and starts no agent turn — see `.github/agy-tested-version` for the version this was verified against). `auth.loggedIn: true` means signed in; `auth.loggedIn: false` means not signed in, and `auth.authUrl` has the OAuth URL to visit; `auth.loggedIn: null` means the check itself failed for an unrelated reason (offline, older agy, etc.) — in that case, fall back to telling the user that a real command like `/agy:review` will report a login URL if one is needed.
+- Do not attempt to run `agy login` or any interactive login flow yourself.
