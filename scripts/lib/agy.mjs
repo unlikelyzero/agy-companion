@@ -42,6 +42,8 @@ const AUTH_REQUIRED_PATTERN = /authentication required/i;
 const URL_PATTERN = /(https?:\/\/\S+)/;
 const DEFAULT_RUN_TIMEOUT_MS = 15 * 60 * 1000;
 const UPSTREAM_HEADLESS_AUTH_ISSUE = "https://github.com/google-antigravity/antigravity-cli/issues/78";
+const AUTH_CHECK_TIMEOUT_MS = 20 * 1000;
+const SELECTABLE_LIST_TIMEOUT_MS = 20 * 1000;
 const PACKAGE_ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const TESTED_VERSION_PATH = path.join(PACKAGE_ROOT, ".github", "agy-tested-version");
 
@@ -103,17 +105,21 @@ export function getAgyAvailability(cwd) {
 }
 
 /**
- * agy 1.0.1 has no `whoami` / `account status` equivalent, and probing auth
- * by actually running a prompt would consume the user's quota and could
- * block on an interactive OAuth screen. So, unlike Codex's
- * `getCodexAuthStatus` (which calls the app-server's `account/read` RPC),
- * this can only report whether the binary is present — actual login state
- * is only discoverable by running a real command, at which point
- * `AgyAuthRequiredError` (surfaced through job status/result) reports the
- * OAuth URL to visit.
+ * agy 1.0.1 had no `whoami` / `account status` equivalent, and probing auth
+ * by actually running a prompt would have consumed the user's quota and
+ * could have blocked on an interactive OAuth screen. That's no longer true:
+ * current `agy` answers read-only slash commands like `/quota` in print mode
+ * without starting an agent turn or spending quota (confirmed live — see
+ * `.github/agy-tested-version` for the version checked — `agy -p "/quota"
+ * --output-format json` returns a `{"status":"SUCCESS",...}` envelope
+ * instantly when signed in). This reuses that command as a free login
+ * probe: a `SUCCESS` envelope means
+ * `agy` is authenticated, an `AgyAuthRequiredError` means it isn't (and
+ * carries the OAuth URL to visit), and any other failure falls back to
+ * "unknown" the same way the old binary-only check did.
  */
-export function getAgyAuthStatus(cwd) {
-  const availability = getAgyAvailability(cwd);
+export async function getAgyAuthStatus(cwd, options = {}) {
+  const availability = options.availability ?? getAgyAvailability(cwd);
   if (!availability.available) {
     return {
       available: false,
@@ -123,15 +129,52 @@ export function getAgyAuthStatus(cwd) {
     };
   }
 
-  return {
-    available: true,
-    loggedIn: null,
-    detail:
-      "agy has no headless auth-status check. Login state is only known once a command runs: " +
-      `if agy needs Google OAuth login it will report the login URL through /agy:status instead of hanging ` +
-      `(tracked upstream: ${UPSTREAM_HEADLESS_AUTH_ISSUE}).`,
-    source: "unknown"
-  };
+  try {
+    const result = await runAgyPrompt(cwd, {
+      prompt: "/quota",
+      outputFormat: "json",
+      timeoutMs: options.timeoutMs ?? AUTH_CHECK_TIMEOUT_MS,
+      spawnImpl: options.spawnImpl,
+      env: options.env
+    });
+    const parsedEnvelope = parseAgyEnvelope(result.stdout);
+    if (parsedEnvelope.ok && parsedEnvelope.envelope.status === "SUCCESS") {
+      return {
+        available: true,
+        loggedIn: true,
+        detail: 'Signed in (confirmed via the free `agy -p "/quota"` print-mode check, which spends no quota).',
+        source: "quota-check",
+        authUrl: null
+      };
+    }
+    return {
+      available: true,
+      loggedIn: null,
+      detail: `agy answered the quota check but not with a recognizable result${
+        parsedEnvelope.error ? `: ${parsedEnvelope.error}` : "."
+      }`,
+      source: "quota-check",
+      authUrl: null
+    };
+  } catch (error) {
+    if (error instanceof AgyAuthRequiredError) {
+      return {
+        available: true,
+        loggedIn: false,
+        detail: error.message,
+        source: "quota-check",
+        authUrl: error.authUrl
+      };
+    }
+    return {
+      available: true,
+      loggedIn: null,
+      detail: `Could not confirm login state: ${error instanceof Error ? error.message : String(error)} ` +
+        `(tracked upstream for any remaining headless-auth gaps: ${UPSTREAM_HEADLESS_AUTH_ISSUE}).`,
+      source: "quota-check",
+      authUrl: null
+    };
+  }
 }
 
 /**
@@ -166,8 +209,14 @@ function buildAgyArgs(options) {
   for (const dir of options.addDirs ?? []) {
     args.push("--add-dir", dir);
   }
+  if (options.agent) {
+    args.push("--agent", options.agent);
+  }
   if (options.write) {
     args.push("--dangerously-skip-permissions");
+  }
+  if (options.mode) {
+    args.push("--mode", options.mode);
   }
   if (options.sandbox) {
     args.push("--sandbox");
@@ -569,6 +618,121 @@ export function diffGitStatusSnapshots(before, after) {
     }
   }
   return [...changed].sort();
+}
+
+/**
+ * Runs `agy --output-format json <subcommandArgs>` (a plain listing
+ * subcommand, not `--print`) and returns raw stdout. Progress noise (e.g.
+ * "Fetching available models...") goes to stderr (confirmed 2026-08 against
+ * a real agy install — see `.github/agy-tested-version` for the version
+ * checked), so stdout is clean JSON on success; `parseAgyEnvelope`'s
+ * brace-extraction is kept as defense in depth regardless.
+ */
+function runAgyListingSubcommand(cwd, subcommandArgs, options = {}) {
+  const spawnImpl = options.spawnImpl ?? spawn;
+  const timeoutMs = Math.max(0, Number(options.timeoutMs) || SELECTABLE_LIST_TIMEOUT_MS);
+
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let settled = false;
+
+    const child = spawnImpl("agy", subcommandArgs, {
+      cwd,
+      env: options.env ?? process.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.kill?.("SIGTERM");
+      reject(new AgyTimeoutError(timeoutMs));
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", () => {
+      // Progress/status noise only; the listing itself is on stdout.
+    });
+
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (error?.code === "ENOENT") {
+        reject(
+          new Error(
+            "agy CLI is not installed or is not on PATH. Install the Antigravity CLI, then rerun `/agy:setup`."
+          )
+        );
+        return;
+      }
+      reject(error);
+    });
+
+    child.on("close", () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(stdout);
+    });
+  });
+}
+
+/**
+ * Lists agy's real available models (confirmed 2026-08 against a live agy
+ * install — see `.github/agy-tested-version` for the version checked —
+ * `agy --output-format json models` returns IDs like `gemini-3.1-pro-high`
+ * and `claude-sonnet-4-6`, not the hyphenated shorthand a user might guess).
+ * Used to validate a `--model` choice before spawning a real run instead of
+ * letting agy reject it after the fact.
+ */
+export async function listAgyModels(cwd, options = {}) {
+  const stdout = await runAgyListingSubcommand(cwd, ["--output-format", "json", "models"], options);
+  const parsedEnvelope = parseAgyEnvelope(stdout);
+  if (!parsedEnvelope.ok) {
+    throw new Error(`Could not parse agy's model list: ${parsedEnvelope.error}`);
+  }
+  const models = parsedEnvelope.envelope.command?.data?.models;
+  return Array.isArray(models) ? models : [];
+}
+
+/**
+ * Lists agy's real available custom agents (`agy --output-format json
+ * agent`), each `{id, ...}`. Used the same way as `listAgyModels`, to
+ * validate a `--agent` choice up front.
+ */
+export async function listAgyAgents(cwd, options = {}) {
+  const stdout = await runAgyListingSubcommand(cwd, ["--output-format", "json", "agent"], options);
+  const parsedEnvelope = parseAgyEnvelope(stdout);
+  if (!parsedEnvelope.ok) {
+    throw new Error(`Could not parse agy's agent list: ${parsedEnvelope.error}`);
+  }
+  const agents = parsedEnvelope.envelope.command?.data?.agents;
+  return Array.isArray(agents) ? agents : [];
+}
+
+/**
+ * Returns `null` if `id` is unset, or `entries` is empty/unavailable (can't
+ * validate, so don't block), or `id` matches one of `entries`. Otherwise
+ * returns the list of known ids, for building a helpful error message.
+ */
+export function findUnknownEntryId(entries, id) {
+  if (!id || !Array.isArray(entries) || entries.length === 0) {
+    return null;
+  }
+  if (entries.some((entry) => entry?.id === id)) {
+    return null;
+  }
+  return entries.map((entry) => entry?.id).filter(Boolean);
 }
 
 export { UPSTREAM_HEADLESS_AUTH_ISSUE };

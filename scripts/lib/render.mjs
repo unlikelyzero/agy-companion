@@ -162,7 +162,7 @@ export function renderSetupReport(report) {
     `- node: ${report.node.detail}`,
     `- npm: ${report.npm.detail}`,
     `- agy: ${report.agy.detail}`,
-    `- auth: ${report.auth.detail}`,
+    `- auth: ${report.auth.loggedIn === true ? "signed in" : report.auth.loggedIn === false ? "not signed in" : "unknown"} — ${report.auth.detail}`,
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     ""

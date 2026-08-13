@@ -11,6 +11,10 @@ import {
   AgyTimeoutError,
   AgyUnsupportedFeatureError,
   diffGitStatusSnapshots,
+  findUnknownEntryId,
+  getAgyAuthStatus,
+  listAgyAgents,
+  listAgyModels,
   parseAgyEnvelope,
   parseAndValidateStructuredOutput,
   readOutputSchema,
@@ -440,4 +444,162 @@ test("diffGitStatusSnapshots: reports files that appear or disappear between sna
 
 test("diffGitStatusSnapshots: returns an empty list when either snapshot is missing", () => {
   assert.deepEqual(diffGitStatusSnapshots(null, new Set(["?? a"])), []);
+});
+
+// --- getAgyAuthStatus: free /quota-based login probe (verified live 2026-08 — see .github/agy-tested-version) ---
+
+const FAKE_AVAILABILITY = { available: true, detail: "fake-agy" };
+
+test("getAgyAuthStatus: reports available:false without probing when the binary itself is missing", async () => {
+  const status = await getAgyAuthStatus("/repo", { availability: { available: false, detail: "not found" } });
+  assert.equal(status.available, false);
+  assert.equal(status.loggedIn, null);
+  assert.equal(status.source, "availability");
+});
+
+test("getAgyAuthStatus: reports loggedIn:true on a SUCCESS /quota envelope, spending no other flags than --print and --output-format", async () => {
+  let capturedArgs = null;
+  const spawnImpl = (command, args) => {
+    capturedArgs = args;
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(fakeEnvelope({ structured_output: undefined, command: { name: "usage", data: {} } })));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  const status = await getAgyAuthStatus("/repo", { availability: FAKE_AVAILABILITY, spawnImpl });
+  assert.equal(status.available, true);
+  assert.equal(status.loggedIn, true);
+  assert.deepEqual(capturedArgs, ["--print", "/quota", "--output-format", "json"]);
+});
+
+test("getAgyAuthStatus: reports loggedIn:false and captures the OAuth URL when agy demands login", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit(
+        "data",
+        Buffer.from("Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth?x=1\n")
+      );
+    });
+    return child;
+  };
+  const status = await getAgyAuthStatus("/repo", { availability: FAKE_AVAILABILITY, spawnImpl });
+  assert.equal(status.loggedIn, false);
+  assert.equal(status.authUrl, "https://accounts.google.com/o/oauth2/auth?x=1");
+});
+
+test("getAgyAuthStatus: falls back to loggedIn:null when the quota check fails for an unrelated reason", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stderr.emit("data", Buffer.from("boom\n"));
+      child.emit("close", 1, null);
+    });
+    return child;
+  };
+  const status = await getAgyAuthStatus("/repo", { availability: FAKE_AVAILABILITY, spawnImpl });
+  assert.equal(status.loggedIn, null);
+  assert.equal(status.available, true);
+});
+
+// --- listAgyModels / listAgyAgents: real `agy --output-format json models|agent` shape ---
+
+function fakeListingSpawn(stdoutText, { stderrText = "", exitCode = 0 } = {}) {
+  return (command, args) => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      if (stderrText) {
+        child.stderr.emit("data", Buffer.from(stderrText));
+      }
+      child.stdout.emit("data", Buffer.from(stdoutText));
+      child.emit("close", exitCode, null);
+    });
+    return child;
+  };
+}
+
+test("listAgyModels: parses the real agy --output-format json models envelope, ignoring stderr progress noise", async () => {
+  const envelope = JSON.stringify({
+    conversation_id: "",
+    status: "SUCCESS",
+    response: "",
+    command: { name: "models", data: { models: [{ id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" }] } }
+  });
+  let capturedArgs = null;
+  const spawnImpl = (command, args) => {
+    capturedArgs = args;
+    return fakeListingSpawn(envelope, { stderrText: "Fetching available models...\n" })(command, args);
+  };
+  const models = await listAgyModels("/repo", { spawnImpl });
+  assert.deepEqual(capturedArgs, ["--output-format", "json", "models"]);
+  assert.deepEqual(models, [{ id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" }]);
+});
+
+test("listAgyModels: throws a clear error when agy's output can't be parsed", async () => {
+  const spawnImpl = fakeListingSpawn("not json at all");
+  await assert.rejects(listAgyModels("/repo", { spawnImpl }), /Could not parse agy's model list/);
+});
+
+test("listAgyAgents: parses the real agy --output-format json agent envelope", async () => {
+  const envelope = JSON.stringify({
+    conversation_id: "",
+    status: "SUCCESS",
+    response: "",
+    command: { name: "agents", data: { agents: [{ id: "reviewer", label: "Reviewer" }] } }
+  });
+  let capturedArgs = null;
+  const spawnImpl = (command, args) => {
+    capturedArgs = args;
+    return fakeListingSpawn(envelope)(command, args);
+  };
+  const agents = await listAgyAgents("/repo", { spawnImpl });
+  assert.deepEqual(capturedArgs, ["--output-format", "json", "agent"]);
+  assert.deepEqual(agents, [{ id: "reviewer", label: "Reviewer" }]);
+});
+
+test("listAgyAgents: returns an empty list when agy reports no custom agents", async () => {
+  const envelope = JSON.stringify({
+    conversation_id: "",
+    status: "SUCCESS",
+    response: "",
+    command: { name: "agents", data: { agents: [] } }
+  });
+  const spawnImpl = fakeListingSpawn(envelope);
+  const agents = await listAgyAgents("/repo", { spawnImpl });
+  assert.deepEqual(agents, []);
+});
+
+// --- findUnknownEntryId ---
+
+test("findUnknownEntryId: returns null when the id is unset (nothing to validate)", () => {
+  assert.equal(findUnknownEntryId([{ id: "a" }], undefined), null);
+});
+
+test("findUnknownEntryId: returns null when the entry list is empty (can't validate, don't block)", () => {
+  assert.equal(findUnknownEntryId([], "gemini-3-pro"), null);
+});
+
+test("findUnknownEntryId: returns null when the id matches a known entry", () => {
+  assert.equal(findUnknownEntryId([{ id: "gemini-3.1-pro-high" }, { id: "claude-sonnet-4-6" }], "claude-sonnet-4-6"), null);
+});
+
+test("findUnknownEntryId: returns the known ids when the id doesn't match any entry", () => {
+  const knownIds = findUnknownEntryId([{ id: "gemini-3.1-pro-high" }, { id: "claude-sonnet-4-6" }], "gemini-3-pro");
+  assert.deepEqual(knownIds, ["gemini-3.1-pro-high", "claude-sonnet-4-6"]);
+});
+
+// --- runAgyPrompt: --agent and --mode forwarding ---
+
+test("runAgyPrompt: builds --agent and --mode from options", async () => {
+  let capturedArgs = null;
+  const spawnImpl = (command, args) => {
+    capturedArgs = args;
+    const child = createFakeChild();
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  };
+  await runAgyPrompt("/repo", { prompt: "hello", agent: "reviewer", mode: "accept-edits", spawnImpl });
+  assert.deepEqual(capturedArgs, ["--print", "hello", "--agent", "reviewer", "--mode", "accept-edits"]);
 });

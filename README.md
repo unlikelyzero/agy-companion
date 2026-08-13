@@ -29,7 +29,7 @@ See [docs/INSTALL.md](docs/INSTALL.md) for the full walkthrough. Short version:
 /agy:setup
 ```
 
-`/agy:setup` tells you whether the `agy` binary is on `PATH`. It cannot tell you whether you're logged in without running a real command — see [Differences from codex-plugin-cc](#differences-from-codex-plugin-cc).
+`/agy:setup` tells you whether the `agy` binary is on `PATH` and whether it's signed in, using a free print-mode check that spends no quota — see [Differences from codex-plugin-cc](#differences-from-codex-plugin-cc).
 
 One simple first run:
 
@@ -84,11 +84,13 @@ You can also just ask for a task to be delegated to agy:
 Ask agy to redesign the database connection to be more resilient.
 ```
 
-Pass `--model <model>` or `--effort <low|medium|high>` to control which model agy uses and how hard it thinks:
+Pass `--model <model>`, `--effort <low|medium|high>`, `--agent <agent>`, or `--mode <accept-edits|plan>` to control which model agy uses, how hard it thinks, which custom agent it runs as, and its execution mode:
 
 ```bash
-/agy:rescue --model gemini-3-pro --effort high investigate why the build is failing in CI
+/agy:rescue --model gemini-3.1-pro-high --effort high investigate why the build is failing in CI
 ```
+
+`--model` and `--agent` are checked against agy's real model/agent lists (`agy --output-format json models`/`agent`) before agy is spawned, so a typo fails fast with the real list of ids instead of agy rejecting it after the fact.
 
 ### `/agy:status`
 
@@ -136,8 +138,8 @@ Checks whether the `agy` binary is on `PATH`, and can toggle the stop-time revie
 **A cautionary tale worth stating up front**: this project was first built against third-party spike notes written for `agy 1.0.1`, which found no native structured-output flag, no `--model`, and no `--effort`. Once a real, authenticated `agy` install (`1.1.11` at the time) was available to test against, all three turned out to exist. The CLI moved fast between those two versions and the earlier notes were simply stale by the time this plugin shipped. Every claim below has now been checked against a live `agy` process — including a real `/agy:review` run that produced valid, schema-conformant JSON end to end — but if you're reading this on a much newer `agy` than [`.github/agy-tested-version`](.github/agy-tested-version), re-verify anything that seems suspicious rather than trusting either this document or the version pinned there.
 
 - **Native structured-output enforcement, via `--output-format json --json-schema <path>`.** This was the biggest correction. `agy --print --output-format json --json-schema schemas/review-output.schema.json` returns a single JSON envelope (`{conversation_id, status, response, structured_output, ...}`) where `structured_output` is already schema-conformant — confirmed with a live call that returned exactly the shape requested. `/agy:review` and `/agy:adversarial-review` (`scripts/lib/agy.mjs`'s `runAgyStructured`) use this directly and still run one local validation pass against `schemas/review-output.schema.json` as defense in depth, but no longer need a prompt-and-retry fallback the way earlier drafts assumed. If a future `agy` build ever rejects `--json-schema` as unrecognized, that surfaces as a clear `AgyUnsupportedFeatureError` pointing at `agy update`, not a silent fallback.
-- **`--model` and `--effort` are real and forwarded.** `agy` accepts `--model <model>` and `--effort <low|medium|high>` for a single invocation. `/agy:rescue --model <model> --effort <low|medium|high> ...` forwards both through to `agy`.
-- **OAuth-only auth, no headless path.** `agy --print` blocks on first use, prints a Google sign-in URL, and waits for you to complete the browser flow and (in the version tested) paste an authorization code back into the terminal — there is no API-key or non-interactive login yet (tracked upstream: [`google-antigravity/antigravity-cli#78`](https://github.com/google-antigravity/antigravity-cli/issues/78)). Because agy-companion always runs `agy` non-interactively, it cannot complete that prompt itself. `scripts/lib/agy.mjs` instead watches stdout for the "Authentication required" string, extracts the login URL, and immediately kills the process and surfaces the URL through `/agy:status` / `/agy:result` rather than letting the job hang. You still have to open that URL yourself and rerun the command afterward. `/agy:setup` cannot report real login state either — it can only confirm the `agy` binary is on `PATH`, since probing auth would mean spending a real request and possibly hitting this same interactive prompt. (Note: this detection logic is unit-tested but not yet exercised against a live OAuth-required prompt, since the account used for testing was already authenticated — see [docs/TESTING.md](docs/TESTING.md).)
+- **`--model`, `--effort`, `--agent`, and `--mode` are real and forwarded.** `agy` accepts `--model <model>`, `--effort <low|medium|high>`, `--agent <agent>`, and `--mode <accept-edits|plan>` for a single invocation. `/agy:rescue --model <model> --effort <low|medium|high> --agent <agent> --mode <mode> ...` forwards all four through to `agy`. `--model` and `--agent` are validated against agy's real lists (`agy --output-format json models`/`agent`) before agy is spawned — best-effort only, so an unreachable or older `agy` just skips the check rather than blocking the run.
+- **OAuth-only auth, no headless path — but a free way to check login state.** `agy --print` blocks on first use, prints a Google sign-in URL, and waits for you to complete the browser flow and (in the version tested) paste an authorization code back into the terminal — there is no API-key or non-interactive login yet (tracked upstream: [`google-antigravity/antigravity-cli#78`](https://github.com/google-antigravity/antigravity-cli/issues/78)). Because agy-companion always runs `agy` non-interactively, it cannot complete that prompt itself. `scripts/lib/agy.mjs` instead watches stdout for the "Authentication required" string, extracts the login URL, and immediately kills the process and surfaces the URL through `/agy:status` / `/agy:result` rather than letting the job hang. You still have to open that URL yourself and rerun the command afterward. `/agy:setup` now also runs a real, free login probe: `agy` answers `-p "/quota" --output-format json` as a print-mode command that starts no agent turn and spends no quota (confirmed live against the version in [`.github/agy-tested-version`](.github/agy-tested-version)), so `getAgyAuthStatus` uses that to report `loggedIn: true/false/null` instead of only confirming the binary is on `PATH`.
 - **No `/agy:transfer`.** Codex's `/codex:transfer` uses a Codex-specific external-agent session importer to turn a Claude Code transcript into a resumable Codex thread. `agy` has no documented equivalent, and this plugin does not invent one.
 - **Partial per-job resume.** `agy`'s JSON envelope does include a real `conversation_id` — `/agy:review` and `/agy:adversarial-review` now capture and store it per job. But `/agy:rescue` (the `task` path) runs in plain-text mode, not `--output-format json`, so it has no envelope to read a `conversation_id` from; `--resume` there still only means `agy --continue` ("resume the most recent conversation"), not a specific earlier job. Wiring `task` through the JSON envelope too, so rescue jobs get precise resume, is a reasonable follow-up someone should pick up.
 - **No live progress stream.** Codex's app-server emits structured `item/started` / `item/completed` events (commands running, files being edited, reasoning summaries) that the Codex plugin turns into a live phase indicator. `agy --print` gives no equivalent — it's silent until it prints the final answer. `/agy:status` on a running job can only show a raw tail of stdout/stderr as it arrives, not a phase like "editing" or "verifying".
@@ -193,7 +195,7 @@ No. Every `/agy:*` command spawns your local `agy` CLI directly (`agy --print ..
 
 ### Can I use this without ever authenticating agy?
 
-No. Every command that actually talks to `agy` requires you to complete `agy`'s Google OAuth flow at least once. `/agy:setup` will tell you if the binary itself is missing, but not whether you're logged in.
+No. Every command that actually talks to `agy` requires you to complete `agy`'s Google OAuth flow at least once. `/agy:setup` will tell you if the binary itself is missing, and will also report whether you're signed in via a free login check.
 
 ## Testing
 

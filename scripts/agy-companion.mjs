@@ -11,13 +11,15 @@ import {
   AgyAuthRequiredError,
   captureGitStatusSnapshot,
   diffGitStatusSnapshots,
+  findUnknownEntryId,
   getAgyAuthStatus,
   getAgyAvailability,
   getSessionRuntimeStatus,
+  listAgyAgents,
+  listAgyModels,
   readOutputSchema,
   runAgyPrompt,
-  runAgyStructured,
-  UPSTREAM_HEADLESS_AUTH_ISSUE
+  runAgyStructured
 } from "./lib/agy.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
@@ -69,7 +71,7 @@ function printUsage() {
       "  node scripts/agy-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/agy-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/agy-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/agy-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [prompt]",
+      "  node scripts/agy-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model>] [--effort <low|medium|high>] [--agent <agent>] [--mode <accept-edits|plan>] [prompt]",
       "  node scripts/agy-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/agy-companion.mjs result [job-id] [--json]",
       "  node scripts/agy-companion.mjs cancel [job-id] [--json]"
@@ -155,16 +157,16 @@ async function buildSetupReport(cwd, actionsTaken = []) {
   const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
   const npmStatus = binaryAvailable("npm", ["--version"], { cwd });
   const agyStatus = getAgyAvailability(cwd);
-  const authStatus = getAgyAuthStatus(cwd);
+  const authStatus = await getAgyAuthStatus(cwd);
   const config = getConfig(workspaceRoot);
 
   const nextSteps = [];
   if (!agyStatus.available) {
     nextSteps.push("Install the Antigravity CLI (`agy`), then rerun `/agy:setup`.");
-  } else {
-    nextSteps.push(
-      `agy has no headless auth check, so login state is only confirmed by running a command. If a run reports that Google OAuth login is required, visit the printed URL to sign in (tracked upstream: ${UPSTREAM_HEADLESS_AUTH_ISSUE}).`
-    );
+  } else if (authStatus.loggedIn === false) {
+    nextSteps.push(`agy is not signed in. Visit this URL to authenticate, then rerun /agy:setup: ${authStatus.authUrl ?? "(no URL captured — rerun a real command to get one)"}`);
+  } else if (authStatus.loggedIn === null) {
+    nextSteps.push(`Could not confirm agy's login state (${authStatus.detail}). Run a real command such as /agy:review — it will report the OAuth URL if login is required.`);
   }
   if (!config.stopReviewGate) {
     nextSteps.push("Optional: run `/agy:setup --enable-review-gate` to require a fresh review before stop.");
@@ -375,6 +377,8 @@ async function executeTaskRun(request) {
     write: Boolean(request.write),
     model: request.model || undefined,
     effort: request.effort || undefined,
+    agent: request.agent || undefined,
+    mode: request.mode || undefined,
     onProgress: request.onProgress,
     tailFile: request.tailFile
   });
@@ -458,8 +462,50 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, prompt, write, resumeLast, jobId, model, effort }) {
-  return { cwd, prompt, write, resumeLast, jobId, model, effort };
+function buildTaskRequest({ cwd, prompt, write, resumeLast, jobId, model, effort, agent, mode }) {
+  return { cwd, prompt, write, resumeLast, jobId, model, effort, agent, mode };
+}
+
+const VALID_TASK_MODES = ["accept-edits", "plan"];
+
+/**
+ * Best-effort validation against agy's real model/agent lists (`agy
+ * --output-format json models|agent`, confirmed live 2026-08 — see
+ * `.github/agy-tested-version` for the version checked). Never blocks the
+ * run if the listing itself fails (offline, older agy,
+ * transient error) — it only rejects a choice it can positively confirm is
+ * unknown.
+ */
+async function ensureKnownModelChoice(cwd, model) {
+  if (!model) {
+    return;
+  }
+  let models;
+  try {
+    models = await listAgyModels(cwd);
+  } catch {
+    return;
+  }
+  const knownIds = findUnknownEntryId(models, model);
+  if (knownIds) {
+    throw new Error(`Unknown agy model "${model}". Available models: ${knownIds.join(", ")}`);
+  }
+}
+
+async function ensureKnownAgentChoice(cwd, agent) {
+  if (!agent) {
+    return;
+  }
+  let agents;
+  try {
+    agents = await listAgyAgents(cwd);
+  } catch {
+    return;
+  }
+  const knownIds = findUnknownEntryId(agents, agent);
+  if (knownIds) {
+    throw new Error(`Unknown agy agent "${agent}". Available agents: ${knownIds.join(", ")}`);
+  }
 }
 
 function readTaskPrompt(cwd, options, positionals) {
@@ -581,7 +627,7 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "prompt-file", "model", "effort"],
+    valueOptions: ["cwd", "prompt-file", "model", "effort", "agent", "mode"],
     booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"]
   });
 
@@ -597,9 +643,16 @@ async function handleTask(argv) {
   const write = Boolean(options.write);
   const model = options.model || undefined;
   const effort = options.effort || undefined;
+  const agent = options.agent || undefined;
+  const mode = options.mode || undefined;
   if (effort && !["low", "medium", "high"].includes(effort)) {
     throw new Error(`Invalid --effort "${effort}". agy accepts: low, medium, high.`);
   }
+  if (mode && !VALID_TASK_MODES.includes(mode)) {
+    throw new Error(`Invalid --mode "${mode}". agy accepts: ${VALID_TASK_MODES.join(", ")}.`);
+  }
+  await ensureKnownModelChoice(cwd, model);
+  await ensureKnownAgentChoice(cwd, agent);
   const taskMetadata = buildTaskRunMetadata({ prompt, resumeLast });
 
   if (options.background) {
@@ -607,7 +660,7 @@ async function handleTask(argv) {
     requireTaskRequest(prompt, resumeLast);
 
     const job = buildTaskJob(workspaceRoot, taskMetadata, write);
-    const request = buildTaskRequest({ cwd, prompt, write, resumeLast, jobId: job.id, model, effort });
+    const request = buildTaskRequest({ cwd, prompt, write, resumeLast, jobId: job.id, model, effort, agent, mode });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, `${payload.title} started in the background as ${payload.jobId}. Check /agy:status ${payload.jobId} for progress.\n`, options.json);
     return;
@@ -617,7 +670,7 @@ async function handleTask(argv) {
   await runForegroundCommand(
     job,
     (progress, logFile) =>
-      executeTaskRun({ cwd, prompt, write, resumeLast, model, effort, jobId: job.id, onProgress: progress, tailFile: logFile }),
+      executeTaskRun({ cwd, prompt, write, resumeLast, model, effort, agent, mode, jobId: job.id, onProgress: progress, tailFile: logFile }),
     { json: options.json }
   );
 }
