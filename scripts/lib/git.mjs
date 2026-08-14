@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { isProbablyText } from "./fs.mjs";
 import { formatCommandFailure, runCommand, runCommandChecked } from "./process.mjs";
+import { REVIEW_CONTEXT_FILE_NAME } from "./review-snapshot.mjs";
 
 const MAX_UNTRACKED_BYTES = 24 * 1024;
 const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
@@ -251,11 +252,19 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
     ];
   }
 
+  const fullDiffText = includeDiff
+    ? null
+    : [
+        formatSection("Staged Diff", gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout),
+        formatSection("Unstaged Diff", gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout)
+      ].join("\n");
+
   return {
     mode: "working-tree",
     summary: `Reviewing ${state.staged.length} staged, ${state.unstaged.length} unstaged, and ${state.untracked.length} untracked file(s).`,
     content: parts.join("\n"),
-    changedFiles
+    changedFiles,
+    fullDiffText
   };
 }
 
@@ -267,25 +276,21 @@ function collectBranchContext(cwd, baseRef, options = {}) {
   const logOutput = gitChecked(cwd, ["log", "--oneline", "--decorate", comparison.commitRange]).stdout.trim();
   const diffStat = gitChecked(cwd, ["diff", "--stat", comparison.commitRange]).stdout.trim();
 
+  const branchDiffText = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout;
+
   return {
     mode: "branch",
     summary: `Reviewing branch ${currentBranch} against ${baseRef} from merge-base ${comparison.mergeBase}.`,
     content: includeDiff
-      ? [
-          formatSection("Commit Log", logOutput),
-          formatSection("Diff Stat", diffStat),
-          formatSection(
-            "Branch Diff",
-            gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff", comparison.commitRange]).stdout
-          )
-        ].join("\n")
+      ? [formatSection("Commit Log", logOutput), formatSection("Diff Stat", diffStat), formatSection("Branch Diff", branchDiffText)].join("\n")
       : [
           formatSection("Commit Log", logOutput),
           formatSection("Diff Stat", diffStat),
           formatSection("Changed Files", changedFiles.join("\n"))
         ].join("\n"),
     changedFiles,
-    comparison
+    comparison,
+    fullDiffText: includeDiff ? null : formatSection("Branch Diff", branchDiffText)
   };
 }
 
@@ -294,7 +299,7 @@ function buildAdversarialCollectionGuidance(options = {}) {
     return "Use the repository context below as primary evidence.";
   }
 
-  return "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings.";
+  return `The repository context below is a lightweight summary. Read \`${REVIEW_CONTEXT_FILE_NAME}\` in the current working directory for the complete diff before finalizing findings — this is a working copy, not a git repository, so git commands will not work here.`;
 }
 
 export function collectReviewContext(cwd, target, options = {}) {

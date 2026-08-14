@@ -116,7 +116,7 @@ test("renderTaskResult: stays quiet for a write run that legitimately edited fil
   assert.doesNotMatch(output, /WARNING/);
 });
 
-test("renderReviewResult: warns loudly when a read-only review modified the worktree", () => {
+test("renderReviewResult: warns loudly when a read-only review wrote inside its snapshot", () => {
   const output = renderReviewResult(
     {
       parsed: {
@@ -133,7 +133,7 @@ test("renderReviewResult: warns loudly when a read-only review modified the work
     }
   );
   assert.match(output, /\[!WARNING\]/);
-  assert.match(output, /modified the working tree/);
+  assert.match(output, /disposable snapshot/);
   assert.match(output, /src\/touched\.ts/);
   assert.match(output, /README\.md/);
   // The banner has to lead, or it gets buried under findings.

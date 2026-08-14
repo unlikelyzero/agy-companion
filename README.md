@@ -51,7 +51,7 @@ Use `--base <ref>` for branch review. It also supports `--wait` and `--backgroun
 /agy:review --background
 ```
 
-This command is read-only. When run in the background you can use [`/agy:status`](#agystatus) to check on progress and [`/agy:cancel`](#agycancel) to cancel it.
+This command is read-only, and structurally so: it runs against a disposable, `.git`-free copy of your working tree in a scratch directory (any `AGENTS.md`/`CLAUDE.md`/etc. instruction files stripped out of that copy first), not your actual checkout, so a write it makes lands in throwaway space instead of your repo. When run in the background you can use [`/agy:status`](#agystatus) to check on progress and [`/agy:cancel`](#agycancel) to cancel it.
 
 ### `/agy:adversarial-review`
 
@@ -63,7 +63,7 @@ Runs a **steerable** review that questions the chosen implementation and design,
 /agy:adversarial-review --background look for race conditions and question the chosen approach
 ```
 
-This command is read-only. It does not fix code.
+This command is read-only, in the same structural sense as `/agy:review` above (a disposable snapshot, not your checkout). It does not fix code.
 
 ### `/agy:rescue`
 
