@@ -7,16 +7,38 @@ on:
 
 jobs:
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # package.json's `engines.node` claims 18.18 as the floor, so that's the
+        # one version that must appear on every OS in the matrix — it's the only
+        # version actually being verified as a floor, not just a "probably fine."
+        node-version: ["18.18", "20", "22", "24"]
+        exclude:
+          - os: macos-latest
+            node-version: "20"
+          - os: macos-latest
+            node-version: "22"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm test
+
+  version-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm test
       # The plugin states its version in four places across three manifests, and
       # Claude Code reads those (not the git tag) to detect updates. Catching a
       # drifted field here keeps a half-bumped version from reaching main, where
-      # it would produce a release that some users are never offered.
+      # it would produce a release that some users are never offered. Runs once
+      # here rather than per matrix cell above — it doesn't depend on Node/OS.
       - name: Check plugin version consistency
         run: npm run version:check
