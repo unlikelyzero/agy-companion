@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 import { test } from "node:test";
 
 const SESSION_ID_ENV = "AGY_COMPANION_SESSION_ID";
@@ -51,7 +52,10 @@ async function withIsolatedWorkspace(fn, { sessionId = null } = {}) {
 
 test("job-control: buildStatusSnapshot separates running, latest finished, and recent jobs", async () => {
   await withIsolatedWorkspace(async ({ cwd, state, jobControl }) => {
-    state.upsertJob(cwd, { id: "task-1", status: "running", jobClass: "task", updatedAt: "2026-01-01T00:00:00.000Z" });
+    // pid: process.pid keeps this fixture out of lost-job reconciliation (it's a live
+    // pid, even though the job it's attached to here is only a fixture) — this test is
+    // about status-bucket categorization, not about liveness reconciliation itself.
+    state.upsertJob(cwd, { id: "task-1", status: "running", jobClass: "task", pid: process.pid, updatedAt: "2026-01-01T00:00:00.000Z" });
     state.upsertJob(cwd, { id: "review-1", status: "completed", jobClass: "review", updatedAt: "2026-01-02T00:00:00.000Z" });
     state.upsertJob(cwd, { id: "review-0", status: "failed", jobClass: "review", updatedAt: "2026-01-01T12:00:00.000Z" });
 

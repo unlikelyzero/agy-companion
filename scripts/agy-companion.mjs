@@ -28,7 +28,7 @@ import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
-import { generateJobId, getConfig, listJobs, setConfig, upsertJob, writeJobFile } from "./lib/state.mjs";
+import { generateJobId, getConfig, isActiveJobStatus, listJobs, setConfig, upsertJob, writeJobFile } from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
@@ -261,10 +261,6 @@ function validatePlainReviewRequest(focusText) {
   }
 }
 
-function isActiveJobStatus(status) {
-  return status === "queued" || status === "running";
-}
-
 function getCurrentClaudeSessionId() {
   return process.env[SESSION_ID_ENV] ?? null;
 }
@@ -278,7 +274,7 @@ function filterJobsForCurrentClaudeSession(jobs) {
 }
 
 function findLatestResumableTaskJob(jobs) {
-  return jobs.find((job) => job.jobClass === "task" && job.status !== "queued" && job.status !== "running") ?? null;
+  return jobs.find((job) => job.jobClass === "task" && !isActiveJobStatus(job.status)) ?? null;
 }
 
 function ensureNoActiveTaskJob(workspaceRoot, excludeJobId) {

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import process from "node:process";
 
 import { terminateProcessTree } from "./lib/process.mjs";
-import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
+import { isActiveJobStatus, resolveStateFile, updateState } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "AGY_COMPANION_SESSION_ID";
@@ -47,27 +47,19 @@ function cleanupSessionJobs(cwd, sessionId) {
     return;
   }
 
-  const state = loadState(workspaceRoot);
-  const removedJobs = state.jobs.filter((job) => job.sessionId === sessionId);
-  if (removedJobs.length === 0) {
-    return;
-  }
-
-  for (const job of removedJobs) {
-    const stillRunning = job.status === "queued" || job.status === "running";
-    if (!stillRunning) {
-      continue;
+  updateState(workspaceRoot, (state) => {
+    const removedJobs = state.jobs.filter((job) => job.sessionId === sessionId);
+    for (const job of removedJobs) {
+      if (!isActiveJobStatus(job.status)) {
+        continue;
+      }
+      try {
+        terminateProcessTree(job.pid ?? Number.NaN);
+      } catch {
+        // Ignore teardown failures during session shutdown.
+      }
     }
-    try {
-      terminateProcessTree(job.pid ?? Number.NaN);
-    } catch {
-      // Ignore teardown failures during session shutdown.
-    }
-  }
-
-  saveState(workspaceRoot, {
-    ...state,
-    jobs: state.jobs.filter((job) => job.sessionId !== sessionId)
+    state.jobs = state.jobs.filter((job) => job.sessionId !== sessionId);
   });
 }
 
