@@ -2,9 +2,7 @@
 
 Use Google's [Antigravity CLI](https://antigravity.google/) (`agy`) from inside Claude Code for code reviews or to delegate tasks — the same idea as Anthropic's `codex` plugin, but driving `agy` instead of Codex.
 
-This plugin is a from-scratch port of the structure of the [`codex` Claude Code plugin](https://github.com/openai/codex-plugin-cc), adapted to `agy`'s much smaller and simpler CLI surface. It is **not** a drop-in behavioral clone — see [Differences from codex-plugin-cc](#differences-from-codex-plugin-cc) below before you rely on it for anything Codex's plugin does that this one doesn't.
-
-Two earlier attempts at this same idea exist and are both dead ends: [`sakibsadmanshajib/gemini-plugin-cc`](https://github.com/sakibsadmanshajib/gemini-plugin-cc) is archived/deprecated, and [`sakibsadmanshajib/antigravity-plugin`](https://github.com/sakibsadmanshajib/antigravity-plugin) has open bug reports that its Claude Code slash commands are silent no-ops and that its documented install command doesn't match its actual marketplace name. This README tries hard not to repeat that pattern — every claim below about what works has now been verified against a real, authenticated `agy` install (including a live end-to-end `/agy:review` run), not just documentation or mocked tests; see [`.github/agy-tested-version`](.github/agy-tested-version) for the exact version last verified. See [Differences from codex-plugin-cc](#differences-from-codex-plugin-cc) for what's still genuinely unverified.
+Created and maintained by John Hill ([@unlikelyzero](https://github.com/unlikelyzero)).
 
 ## What You Get
 
@@ -132,6 +130,10 @@ Checks whether the `agy` binary is on `PATH`, and can toggle the stop-time revie
 > The review gate can create a long-running Claude/agy loop and may drain your `agy` usage quickly. Only enable it when you plan to actively monitor the session.
 
 ## Differences from codex-plugin-cc
+
+This plugin is a from-scratch port of the structure of the [`codex` Claude Code plugin](https://github.com/openai/codex-plugin-cc), adapted to `agy`'s much smaller and simpler CLI surface. It is **not** a drop-in behavioral clone — this section explains what's actually different before you rely on it for anything Codex's plugin does that this one doesn't.
+
+Two earlier attempts at this same idea exist and are both dead ends: [`sakibsadmanshajib/gemini-plugin-cc`](https://github.com/sakibsadmanshajib/gemini-plugin-cc) is archived/deprecated, and [`sakibsadmanshajib/antigravity-plugin`](https://github.com/sakibsadmanshajib/antigravity-plugin) has open bug reports that its Claude Code slash commands are silent no-ops and that its documented install command doesn't match its actual marketplace name. This README tries hard not to repeat that pattern — every claim below about what works has now been verified against a real, authenticated `agy` install (including a live end-to-end `/agy:review` run), not just documentation or mocked tests; see [`.github/agy-tested-version`](.github/agy-tested-version) for the exact version last verified.
 
 `agy` (Antigravity CLI) has a smaller CLI surface than Codex's app-server, though a real one — not as thin as it first looked. This section is deliberately explicit about what's actually different, so this plugin doesn't repeat the overpromising that sank the two prior attempts at this idea.
 

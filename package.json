@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Use Google's Antigravity CLI (agy) from Claude Code to review code or delegate tasks.",
+  "author": "John Hill (https://github.com/unlikelyzero)",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=18.18.0"

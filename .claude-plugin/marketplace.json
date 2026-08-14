@@ -1,7 +1,8 @@
 {
   "name": "agy-companion",
   "owner": {
-    "name": "unlikelyzero"
+    "name": "John Hill",
+    "url": "https://github.com/unlikelyzero"
   },
   "metadata": {
     "description": "agy-companion: drive Google's Antigravity CLI (agy) from Claude Code for code review and delegated tasks.",
@@ -13,7 +14,8 @@
       "description": "Use Google's Antigravity CLI (agy) from Claude Code to review code or delegate tasks.",
       "version": "0.2.0",
       "author": {
-        "name": "unlikelyzero"
+        "name": "John Hill",
+        "url": "https://github.com/unlikelyzero"
       },
       "source": "./"
     }
