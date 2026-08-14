@@ -192,24 +192,36 @@ export function renderSetupReport(report) {
 }
 
 /**
- * Reviews run with `--dangerously-skip-permissions`, because since agy 1.1.3
- * nothing else gets a tool call through a headless run. That flag approves
- * writes as well as reads, so a review *can* modify the worktree even though
- * it is only ever asked to read. This banner is the check on that: it leads
- * the output, so an unexpected edit can't be missed under a wall of findings.
+ * Runs with `--dangerously-skip-permissions`, because since agy 1.1.3 nothing
+ * else gets a tool call through a headless run. That flag approves writes as
+ * well as reads, so a read-only run *can* attempt to write even though it's
+ * only ever asked to read. This banner is the check on that: it leads the
+ * output, so an unexpected write can't be missed under a wall of findings.
+ *
+ * `sandboxed: true` (reviews) means the write landed in a disposable snapshot
+ * that's already been deleted, not the real repo — still worth flagging as
+ * unexpected agent behavior, but not something to go revert.
  */
-function formatUnexpectedWrites(unexpectedWrites, subject = "review") {
+function formatUnexpectedWrites(unexpectedWrites, subject = "review", options = {}) {
   if (!Array.isArray(unexpectedWrites) || unexpectedWrites.length === 0) {
     return "";
   }
-  const lines = [
-    "> [!WARNING]",
-    `> This ${subject} modified the working tree, which a read-only ${subject} should never do.`,
-    `> Read-only runs still pass \`--dangerously-skip-permissions\` (the only way agy allows`,
-    "> headless tool calls), so writes are approved along with reads. Inspect and",
-    "> revert these paths before trusting the result:",
-    ">"
-  ];
+  const lines = options.sandboxed
+    ? [
+        "> [!WARNING]",
+        `> This ${subject} attempted to write to the following paths, which a read-only ${subject} should never do.`,
+        "> It ran against a disposable snapshot of the working tree (already deleted), not the real repo, so nothing",
+        "> here needs reverting — but an unexpected write is still worth understanding before trusting the result:",
+        ">"
+      ]
+    : [
+        "> [!WARNING]",
+        `> This ${subject} modified the working tree, which a read-only ${subject} should never do.`,
+        `> Read-only runs still pass \`--dangerously-skip-permissions\` (the only way agy allows`,
+        "> headless tool calls), so writes are approved along with reads. Inspect and",
+        "> revert these paths before trusting the result:",
+        ">"
+      ];
   for (const file of unexpectedWrites) {
     lines.push(`> - \`${file}\``);
   }
@@ -218,7 +230,7 @@ function formatUnexpectedWrites(unexpectedWrites, subject = "review") {
 
 export function renderReviewResult(parsedResult, meta) {
   const body = renderReviewResultBody(parsedResult, meta);
-  return `${formatUnexpectedWrites(meta?.unexpectedWrites)}${body}`;
+  return `${formatUnexpectedWrites(meta?.unexpectedWrites, "review", { sandboxed: true })}${body}`;
 }
 
 function renderReviewResultBody(parsedResult, meta) {

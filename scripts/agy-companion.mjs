@@ -28,6 +28,7 @@ import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
+import { createReviewSnapshot, diffSnapshotDirectory, captureDirectorySnapshot, REVIEW_CONTEXT_FILE_NAME } from "./lib/review-snapshot.mjs";
 import { generateJobId, getConfig, isActiveJobStatus, listJobs, setConfig, upsertJob, writeJobFile } from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
@@ -324,64 +325,81 @@ async function executeReviewRun(request) {
 
   // A review is read-only by intent, but `--dangerously-skip-permissions` is the only
   // thing that gets a headless tool call past agy 1.1.3+'s soft-deny, and it approves
-  // writes too. Snapshot the worktree either side of the run so a review that edits
-  // anything is reported loudly rather than passing silently.
-  const beforeSnapshot = captureGitStatusSnapshot(context.repoRoot);
+  // writes too. Rather than relying on that intent (and only detecting a violation
+  // after the fact), the review runs against a disposable `.git`-free copy of the
+  // working tree instead of the live checkout — a write it makes lands in scratch
+  // space that gets deleted, never in the real repo. Any agent-instruction files
+  // (AGENTS.md, CLAUDE.md, etc.) are stripped from that copy too, so the review can't
+  // quietly inherit instructions committed by the code it's reviewing.
+  const snapshot = createReviewSnapshot(context.repoRoot);
+  try {
+    if (context.fullDiffText) {
+      fs.writeFileSync(path.join(snapshot.dir, REVIEW_CONTEXT_FILE_NAME), context.fullDiffText, "utf8");
+    }
+    const beforeSnapshot = captureDirectorySnapshot(snapshot.dir);
 
-  const result = await runAgyStructured(context.repoRoot, {
-    prompt,
-    schema: REVIEW_SCHEMA,
-    schemaPath: REVIEW_SCHEMA_PATH,
-    write: false,
-    skipPermissions: true,
-    onProgress: request.onProgress,
-    tailFile: request.tailFile
-  });
+    const result = await runAgyStructured(snapshot.dir, {
+      prompt,
+      schema: REVIEW_SCHEMA,
+      schemaPath: REVIEW_SCHEMA_PATH,
+      write: false,
+      skipPermissions: true,
+      onProgress: request.onProgress,
+      tailFile: request.tailFile
+    });
 
-  const unexpectedWrites = diffGitStatusSnapshots(beforeSnapshot, captureGitStatusSnapshot(context.repoRoot));
+    const unexpectedWrites = diffSnapshotDirectory(beforeSnapshot, snapshot.dir).filter((file) => file !== REVIEW_CONTEXT_FILE_NAME);
 
-  const parsed = {
-    parsed: result.parsed,
-    parseError: result.parseError,
-    toolDenial: result.toolDenial ?? null,
-    rawOutput: result.stdout
-  };
-  const payload = {
-    review: reviewName,
-    target,
-    context: {
-      repoRoot: context.repoRoot,
-      branch: context.branch,
-      summary: context.summary
-    },
-    agy: {
-      status: result.status,
-      stderr: result.stderr,
-      stdout: result.stdout
-    },
-    result: parsed.parsed,
-    rawOutput: parsed.rawOutput,
-    parseError: parsed.parseError,
-    toolDenial: parsed.toolDenial,
-    unexpectedWrites,
-    conversationId: result.conversationId ?? null,
-    retried: result.retried
-  };
+    const parsed = {
+      parsed: result.parsed,
+      parseError: result.parseError,
+      toolDenial: result.toolDenial ?? null,
+      rawOutput: result.stdout
+    };
+    const payload = {
+      review: reviewName,
+      target,
+      context: {
+        repoRoot: context.repoRoot,
+        branch: context.branch,
+        summary: context.summary
+      },
+      snapshot: {
+        fileCount: snapshot.fileCount,
+        snapshotHash: snapshot.snapshotHash,
+        strippedInstructionFiles: snapshot.strippedInstructionFiles
+      },
+      agy: {
+        status: result.status,
+        stderr: result.stderr,
+        stdout: result.stdout
+      },
+      result: parsed.parsed,
+      rawOutput: parsed.rawOutput,
+      parseError: parsed.parseError,
+      toolDenial: parsed.toolDenial,
+      unexpectedWrites,
+      conversationId: result.conversationId ?? null,
+      retried: result.retried
+    };
 
-  return {
-    exitStatus: result.status,
-    conversationResumable: true,
-    payload,
-    rendered: renderReviewResult(parsed, {
-      reviewLabel: reviewName,
-      targetLabel: context.target.label,
-      unexpectedWrites
-    }),
-    summary: parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.stdout, `${reviewName} finished.`),
-    jobTitle: `agy ${reviewName}`,
-    jobClass: "review",
-    targetLabel: context.target.label
-  };
+    return {
+      exitStatus: result.status,
+      conversationResumable: true,
+      payload,
+      rendered: renderReviewResult(parsed, {
+        reviewLabel: reviewName,
+        targetLabel: context.target.label,
+        unexpectedWrites
+      }),
+      summary: parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.stdout, `${reviewName} finished.`),
+      jobTitle: `agy ${reviewName}`,
+      jobClass: "review",
+      targetLabel: context.target.label
+    };
+  } finally {
+    snapshot.cleanup();
+  }
 }
 
 function buildTaskRunMetadata({ prompt, resumeLast = false }) {
