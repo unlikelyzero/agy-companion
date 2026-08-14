@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Rebuilt the background-job state layer to close a class of concurrency bugs: two jobs finishing at the same moment could previously overwrite each other's registry entry, and a crash mid-write could leave `state.json` unreadable, silently wiping the job registry on the next read. Writes to `state.json` and per-job records are now atomic (temp file + fsync + rename), the read-modify-write cycle is protected by a cross-process lock, and a corrupt `state.json` is rebuilt from the still-intact per-job files under `jobs/<id>/` instead of falling back to an empty registry.
+- Added a `lost` job status. A `queued`/`running` job whose recorded process is no longer alive is no longer reported as still running indefinitely — `/agy:status` and friends now mark it `lost` rather than guessing at a `completed`/`failed` outcome it never recorded.
+
 ## 0.2.0 — 2026-08-13
 
 - **Fixed `/agy:review` and `/agy:adversarial-review`, which could not return findings at all.** Since agy `1.1.3`, a headless `--print` run soft-denies any tool call needing an interactive confirmation, ending the turn with an empty response and exit 0 — so a review died on its first `git status` and surfaced as a confusing JSON parse error. agy-companion now passes `--dangerously-skip-permissions` on reviews and on read-only task runs, which is the only mechanism that reliably works headless: scoped `permissions.allow` rules are reported ignored in print mode upstream, and where command rules do apply they match the full command string rather than an executable. This also fixes read-only `/agy:rescue` runs and the optional stop-time review gate, which shells out to a read-only task and would otherwise return nothing and block the session from ending.

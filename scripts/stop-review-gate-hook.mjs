@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { getAgyAvailability } from "./lib/agy.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
-import { getConfig, listJobs } from "./lib/state.mjs";
+import { getConfig, isActiveJobStatus, listJobs } from "./lib/state.mjs";
 import { sortJobsNewestFirst } from "./lib/job-control.mjs";
 import { SESSION_ID_ENV } from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
@@ -137,7 +137,7 @@ function main() {
   const config = getConfig(workspaceRoot);
 
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), input));
-  const runningJob = jobs.find((job) => job.status === "queued" || job.status === "running");
+  const runningJob = jobs.find((job) => isActiveJobStatus(job.status));
   const runningTaskNote = runningJob
     ? `agy task ${runningJob.id} is still running. Check /agy:status and use /agy:cancel ${runningJob.id} if you want to stop it before ending the session.`
     : null;

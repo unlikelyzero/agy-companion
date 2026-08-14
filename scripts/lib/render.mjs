@@ -1,3 +1,5 @@
+import { isActiveJobStatus, isTerminalJobStatus } from "./state.mjs";
+
 function severityRank(severity) {
   switch (severity) {
     case "critical":
@@ -102,7 +104,7 @@ function appendActiveJobsTable(lines, jobs) {
   lines.push("| --- | --- | --- | --- | --- | --- | --- |");
   for (const job of jobs) {
     const actions = [`/agy:status ${job.id}`];
-    if (job.status === "queued" || job.status === "running") {
+    if (isActiveJobStatus(job.status)) {
       actions.push(`/agy:cancel ${job.id}`);
     }
     lines.push(
@@ -125,7 +127,7 @@ function pushJobDetails(lines, job, options = {}) {
   if (options.showDuration && job.duration) {
     lines.push(`  Duration: ${job.duration}`);
   }
-  if (job.status === "failed" && job.errorMessage) {
+  if ((job.status === "failed" || job.status === "lost") && job.errorMessage) {
     lines.push(`  Error: ${job.errorMessage}`);
   }
   if (job.conversationResumable) {
@@ -134,13 +136,13 @@ function pushJobDetails(lines, job, options = {}) {
   if (job.logFile && options.showLog) {
     lines.push(`  Log: ${job.logFile}`);
   }
-  if ((job.status === "queued" || job.status === "running") && options.showCancelHint) {
+  if (isActiveJobStatus(job.status) && options.showCancelHint) {
     lines.push(`  Cancel: /agy:cancel ${job.id}`);
   }
-  if (job.status !== "queued" && job.status !== "running" && options.showResultHint) {
+  if (!isActiveJobStatus(job.status) && options.showResultHint) {
     lines.push(`  Result: /agy:result ${job.id}`);
   }
-  if (job.status !== "queued" && job.status !== "running" && job.jobClass === "task" && job.write && options.showReviewHint) {
+  if (!isActiveJobStatus(job.status) && job.jobClass === "task" && job.write && options.showReviewHint) {
     lines.push("  Review changes: /agy:review --wait");
     lines.push("  Stricter review: /agy:adversarial-review --wait");
   }
@@ -316,14 +318,17 @@ export function renderStatusReport(report) {
 
   if (report.latestFinished) {
     lines.push("Latest finished:");
-    pushJobDetails(lines, report.latestFinished, { showDuration: true, showLog: report.latestFinished.status === "failed" });
+    pushJobDetails(lines, report.latestFinished, {
+      showDuration: true,
+      showLog: report.latestFinished.status === "failed" || report.latestFinished.status === "lost"
+    });
     lines.push("");
   }
 
   if (report.recent.length > 0) {
     lines.push("Recent jobs:");
     for (const job of report.recent) {
-      pushJobDetails(lines, job, { showDuration: true, showLog: job.status === "failed" });
+      pushJobDetails(lines, job, { showDuration: true, showLog: job.status === "failed" || job.status === "lost" });
     }
     lines.push("");
   } else if (report.running.length === 0 && !report.latestFinished) {
@@ -341,8 +346,8 @@ export function renderStatusReport(report) {
 export function renderJobStatusReport(job) {
   const lines = ["# agy Job Status", ""];
   pushJobDetails(lines, job, {
-    showElapsed: job.status === "queued" || job.status === "running",
-    showDuration: job.status !== "queued" && job.status !== "running",
+    showElapsed: isActiveJobStatus(job.status),
+    showDuration: isTerminalJobStatus(job.status),
     showLog: true,
     showCancelHint: true,
     showResultHint: true,
