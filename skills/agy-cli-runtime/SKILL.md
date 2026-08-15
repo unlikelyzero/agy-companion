@@ -17,7 +17,8 @@ Execution rules:
 - Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel` from `agy:agy-rescue`.
 - Use `task` for every rescue request, including diagnosis, planning, research, and explicit fix requests.
 - Default to a write-capable agy run by adding `--write` unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits.
-- agy has no `--model` or `--effort` flag. If the user asks for one, do not pass anything through — say so instead.
+- `--model <model>` and `--effort <low|medium|high>` are real agy flags — forward them when the calling command passes them through. Do not invent a value the caller didn't supply.
+- The task text this subagent receives may already be a normalized implementation contract (Goal / Repository Context / Acceptance Criteria / Files Likely Involved / How to Verify / Guardrails / Original Request) built by `commands/rescue.md` before this subagent was invoked, not a raw one-line request. Forward it exactly as received either way — this subagent has no repository tools to build or check a contract itself, and should not try to.
 
 Command selection:
 - Use exactly one `task` invocation per rescue handoff.
@@ -26,7 +27,7 @@ Command selection:
 - If the forwarded request includes `--fresh`, strip that token from the task text and do not add `--resume-last`.
 - `--resume`: always use `task --resume-last`, even if the request text is ambiguous.
 - `--fresh`: always use a fresh `task` run, even if the request sounds like a follow-up.
-- `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run. It maps to agy's `--continue`, which resumes agy's own most-recently-used conversation — not a specific past job's thread. agy gives no way to target an older job by id.
+- `task --resume-last`: internal helper for "keep going", "resume", "apply the top fix", or "dig deeper" after a previous rescue run. It resumes this session's specific most-recent task job by its captured `conversation_id` (`agy --conversation <id>`), not agy's own vague "most-recently-used conversation" — falling back to agy's `--continue` only for a job old enough to predate `conversation_id` capture.
 
 Safety rules:
 - Default to write-capable agy work in `agy:agy-rescue` unless the user explicitly asks for read-only behavior.
