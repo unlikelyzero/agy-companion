@@ -92,6 +92,17 @@ export function getRepoRoot(cwd) {
   return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
 }
 
+/**
+ * The commit a run's provenance metadata should point at. Best-effort and
+ * `null` on failure (e.g. a freshly initialized repo with no commits yet) —
+ * this is a debugging aid ("did this run see the code I think it did"), not
+ * something any command should fail over.
+ */
+export function getHeadCommit(cwd) {
+  const result = git(cwd, ["rev-parse", "HEAD"]);
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
 export function detectDefaultBranch(cwd) {
   const symbolic = git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
   if (symbolic.status === 0) {
