@@ -545,6 +545,28 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   };
 }
 
+/**
+ * Left unguided, a prompt asking agy to create a new file has been observed
+ * (live, independent of agy-companion's own code — reproduced with a bare
+ * `agy --print` call) landing the file under
+ * `~/.gemini/antigravity-cli/scratch/<name>` instead of the actual working
+ * directory, whenever the request names the file by a bare relative path.
+ * Editing an *existing* tracked file is unaffected — that path resolves
+ * correctly on its own. Explicitly telling agy the absolute cwd and to
+ * always use an absolute path for a new file reliably avoided the redirect
+ * across repeated live trials; asking with a bare or `./`-relative name did
+ * not, even naming the same target directory in English first. This is
+ * prepended only for `--write` runs, since it's new-file creation this
+ * guards against and a read-only run never creates anything.
+ */
+function buildWriteTaskPrompt(workspaceRoot, prompt) {
+  return (
+    `Your current working directory is ${workspaceRoot}. When creating any new file, always use an absolute path ` +
+    "rooted at this exact directory — never a bare relative filename, and never a scratch or temp location. " +
+    `Editing an existing file works as normal.\n\n${prompt}`
+  );
+}
+
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   const agyVersion = ensureAgyAvailable(request.cwd);
@@ -558,6 +580,7 @@ async function executeTaskRun(request) {
   if (!prompt) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
+  const promptToSend = request.write ? buildWriteTaskPrompt(workspaceRoot, prompt) : prompt;
 
   // Snapshot unconditionally. A read-only run still needs
   // `--dangerously-skip-permissions` to make any tool call at all (agy 1.1.3+
@@ -574,7 +597,7 @@ async function executeTaskRun(request) {
   const resumeConversationId = request.resumeLast ? findResumeConversationId(workspaceRoot, request.jobId) : null;
 
   const result = await runAgyText(workspaceRoot, {
-    prompt,
+    prompt: promptToSend,
     conversationId: resumeConversationId ?? undefined,
     continueLatest: Boolean(request.resumeLast) && !resumeConversationId,
     write: Boolean(request.write),
