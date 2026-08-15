@@ -184,3 +184,24 @@ test("state: reconcileJobs gives a freshly queued job a grace window before decl
     assert.equal(job.status, "queued");
   });
 });
+
+test("state: isStateDirectoryWritable reports true for a normal writable plugin data dir", async () => {
+  await withTempPluginData(async () => {
+    const { isStateDirectoryWritable } = await import(`../scripts/lib/state.mjs?t=${Date.now()}-m`);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "agy-companion-repo-"));
+    assert.equal(isStateDirectoryWritable(cwd), true);
+  });
+});
+
+test("state: isStateDirectoryWritable reports false when the state root can't be created", async () => {
+  await withTempPluginData(async () => {
+    const { isStateDirectoryWritable, resolveStateDir } = await import(`../scripts/lib/state.mjs?t=${Date.now()}-n`);
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "agy-companion-repo-"));
+    // Block the state directory's parent with a file where a directory needs to go,
+    // so mkdirSync(..., { recursive: true }) fails partway through.
+    const stateDir = resolveStateDir(cwd);
+    fs.mkdirSync(path.dirname(stateDir), { recursive: true });
+    fs.writeFileSync(stateDir, "not a directory");
+    assert.equal(isStateDirectoryWritable(cwd), false);
+  });
+});

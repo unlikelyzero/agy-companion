@@ -57,7 +57,7 @@ const TESTED_VERSION_PATH = path.join(PACKAGE_ROOT, ".github", "agy-tested-versi
  * version bumps — a hardcoded literal here previously went stale the moment
  * `.github/agy-tested-version` was updated without a matching source edit.
  */
-function readTestedAgyVersion() {
+export function readTestedAgyVersion() {
   try {
     return fs.readFileSync(TESTED_VERSION_PATH, "utf8").trim() || null;
   } catch {
@@ -103,6 +103,44 @@ export class AgyUnsupportedFeatureError extends Error {
 
 export function getAgyAvailability(cwd) {
   return binaryAvailable("agy", ["--version"], { cwd });
+}
+
+/**
+ * The flags this plugin actually depends on (or could use), as they appear
+ * in `agy --help`'s usage listing. Detected by plain substring match against
+ * the flag name — `agy --help` documents each with a leading `--`, so this
+ * doesn't need real flag parsing, just enough to answer "does this install
+ * of agy even recognize this flag" the way `AgyUnsupportedFeatureError`
+ * already does reactively, but as a proactive `/agy:setup --doctor` check.
+ */
+const AGY_CAPABILITY_FLAGS = {
+  jsonSchema: "--json-schema",
+  outputFormat: "--output-format",
+  conversation: "--conversation",
+  sandbox: "--sandbox",
+  agent: "--agent",
+  mode: "--mode",
+  skipPermissions: "--dangerously-skip-permissions",
+  addDir: "--add-dir"
+};
+
+/** Runs `agy --help` — a plain usage listing, no agent turn and no quota spent. */
+export function getAgyHelpText(cwd, options = {}) {
+  const result = runCommand("agy", ["--help"], { cwd, ...options });
+  if (result.error) {
+    throw result.error;
+  }
+  return `${result.stdout}\n${result.stderr}`.trim();
+}
+
+/** Pure: which of `AGY_CAPABILITY_FLAGS` appear in a given `agy --help` output. */
+export function detectAgyCapabilities(helpText) {
+  const text = String(helpText ?? "");
+  const capabilities = {};
+  for (const [key, flag] of Object.entries(AGY_CAPABILITY_FLAGS)) {
+    capabilities[key] = text.includes(flag);
+  }
+  return capabilities;
 }
 
 /**
