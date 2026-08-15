@@ -90,6 +90,8 @@ Pass `--model <model>`, `--effort <low|medium|high>`, `--agent <agent>`, or `--m
 
 `--model` and `--agent` are checked against agy's real model/agent lists (`agy --output-format json models`/`agent`) before agy is spawned, so a typo fails fast with the real list of ids instead of agy rejecting it after the fact.
 
+For a substantial implementation request — one that spans more than a file or two, follows a plan you and Claude just worked out, or is underspecified about scope or verification — `/agy:rescue` normalizes it into a structured contract (Goal, Repository Context, Acceptance Criteria, Files Likely Involved, How to Verify, Guardrails) before handing it to agy, instead of forwarding your raw request as-is. A quick diagnosis ("investigate why the tests started failing") or an unambiguous one-line fix skips this and forwards directly, same as before. After a normalized run finishes, Claude checks the result against that contract's own acceptance criteria before calling it done — see `commands/rescue.md` for exactly when this triggers and the contract shape. This is prompt-level behavior in `commands/rescue.md`/`skills/agy-cli-runtime`, not something `agy-companion.mjs` enforces in code, so it isn't covered by `npm test` — only by using `/agy:rescue` for real.
+
 ### `/agy:status`
 
 Shows running and recent agy jobs for the current repository.

@@ -1,15 +1,55 @@
 ---
 description: Delegate investigation, an explicit fix request, or follow-up rescue work to the agy rescue subagent
 argument-hint: "[--background|--wait] [--resume|--fresh] [--model <model>] [--effort <low|medium|high>] [--agent <agent>] [--mode <accept-edits|plan>] [what agy should investigate, solve, or continue]"
-allowed-tools: Bash(node:*), AskUserQuestion, Agent
+allowed-tools: Read, Glob, Grep, Bash(node:*), AskUserQuestion, Agent
 ---
 
-Invoke the `agy:agy-rescue` subagent via the `Agent` tool (`subagent_type: "agy:agy-rescue"`), forwarding the raw user request as the prompt.
+Invoke the `agy:agy-rescue` subagent via the `Agent` tool (`subagent_type: "agy:agy-rescue"`), forwarding either the raw user request or a normalized implementation contract (see below) as the prompt.
 `agy:agy-rescue` is a subagent, not a skill — do not call `Skill(agy:agy-rescue)` (no such skill) or `Skill(agy:rescue)` (that re-enters this command and hangs the session). The command runs inline so the `Agent` tool stays in scope; forked general-purpose subagents do not expose it.
 The final user-visible response must be agy's output verbatim.
 
 Raw user request:
 $ARGUMENTS
+
+Normalizing substantial implementation requests:
+
+- The subagent only has `Bash` — it cannot read the repository itself. This command runs inline with real tool access, so it is the right place to do this, not the subagent.
+- Decide whether the request needs normalizing before forwarding it:
+  - Skip normalizing for pure diagnosis/investigation/research ("investigate the failed tests", "why is X happening", "look into Y") — forward the raw request as-is, same as today. `--resume`/`--fresh` follow-ups (see below) also skip normalizing; they continue an existing conversation, not start a new contract.
+  - Skip normalizing for a request that is already small and unambiguous (a one-line, single-file fix with an obvious scope).
+  - Normalize a request that describes actual code changes with enough scope that agy's interpretation of "done" could plausibly diverge from the user's — spans more than one file, follows a plan the user or Claude just worked out (including a plan Claude produced via `ExitPlanMode` earlier in this session), or the user's own phrasing is underspecified about scope, verification, or what not to touch.
+  - When genuinely unsure, prefer normalizing — a contract costs a little more upfront setup and meaningfully reduces the odds of agy solving a different problem than the one asked, or quietly touching more than intended.
+- To normalize, build this contract using what you already know from the conversation and (only if needed to fill a section) light `Read`/`Glob`/`Grep` — do not launch a broad exploration pass; this is a light context primer, not a full plan review:
+
+```
+## Goal
+<one or two sentences: what should be true when this is done>
+
+## Repository Context
+<the relevant existing code/pattern to follow, in a sentence or two — omit if nothing beyond the request itself is relevant>
+
+## Acceptance Criteria
+- <concrete, checkable outcomes — what a reviewer would check for>
+
+## Files Likely Involved
+- <path> — <why, if known>
+(state plainly if this isn't known yet and agy should locate the right files itself)
+
+## How to Verify
+<the commands this repo actually uses — tests, build, lint — if known; otherwise say to use whatever the repo's own conventions call for>
+
+## Guardrails
+- Only change what's needed for the stated goal — no unrelated cleanup, refactors, or scope creep.
+- Follow this repository's existing conventions and any CLAUDE.md/AGENTS.md instructions already in scope.
+- <any other constraint this specific request implies — files or areas explicitly out of scope, behavior that must not change, etc.>
+
+## Original Request
+<the user's request, verbatim>
+```
+
+- Every section must be genuinely populated or explicitly marked unknown ("not known — agy should determine this") — never fabricate acceptance criteria, files, or verification steps that don't fit the actual request just to fill the shape.
+- Pass the complete contract text as the forwarded request in place of the raw one-liner. Everything below that talks about "the request" applies to whichever of the two was actually forwarded.
+- This adds one normalization pass, not a review cycle — do not iterate on the contract with the user or ask them to approve it before sending it to agy, except through the existing `--resume`/`--fresh` question below.
 
 Execution mode:
 
@@ -48,3 +88,8 @@ Operating rules:
 - If the helper reports that agy is missing, stop and tell the user to run `/agy:setup`.
 - If the helper's output shows agy is blocked on Google OAuth login, tell the user to visit the printed URL and try again — this plugin cannot complete an interactive login on your behalf.
 - If the user did not supply a request, ask what agy should investigate or fix.
+
+After a normalized, write-capable run finishes:
+
+- Check the result against the contract's own "Acceptance Criteria" and "How to Verify" sections before treating the run as done — a check against what was asked for, not a second implementation attempt. See the `agy-result-handling` skill for how to present that check, or an incomplete/failed run.
+- This check does not replace `/agy:review` — recommend it the same way the result-handling skill already does for any `--write` run, contract or not.
