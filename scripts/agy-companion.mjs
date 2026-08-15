@@ -24,9 +24,10 @@ import {
   runAgyText
 } from "./lib/agy.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import { collectReviewContext, ensureGitRepository, getHeadCommit, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
+import { buildProvenance, hashText } from "./lib/provenance.mjs";
 import { createReviewSnapshot, diffSnapshotDirectory, captureDirectorySnapshot, REVIEW_CONTEXT_FILE_NAME } from "./lib/review-snapshot.mjs";
 import { generateJobId, getConfig, isActiveJobStatus, listJobs, setConfig, upsertJob, writeJobFile } from "./lib/state.mjs";
 import {
@@ -146,6 +147,7 @@ function firstMeaningfulLine(text, fallback) {
   return line ?? fallback;
 }
 
+/** Returns the resolved `agy --version` string (already fetched to confirm the binary exists), for provenance. */
 function ensureAgyAvailable(cwd) {
   const availability = getAgyAvailability(cwd);
   if (!availability.available) {
@@ -153,6 +155,7 @@ function ensureAgyAvailable(cwd) {
       "agy CLI is not installed or is not on PATH. Install the Antigravity CLI, then rerun `/agy:setup`."
     );
   }
+  return availability.detail;
 }
 
 async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
@@ -326,7 +329,7 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
 }
 
 async function executeReviewRun(request) {
-  ensureAgyAvailable(request.cwd);
+  const agyVersion = ensureAgyAvailable(request.cwd);
   ensureGitRepository(request.cwd);
 
   const target = resolveReviewTarget(request.cwd, {
@@ -400,7 +403,15 @@ async function executeReviewRun(request) {
       toolDenial: parsed.toolDenial,
       unexpectedWrites,
       conversationId: result.conversationId ?? null,
-      retried: result.retried
+      retried: result.retried,
+      provenance: buildProvenance({
+        agyVersion,
+        conversationId: result.conversationId ?? null,
+        gitHead: getHeadCommit(context.repoRoot),
+        scope: target.mode,
+        inputHash: snapshot.snapshotHash,
+        reviewedPaths: snapshot.fileCount
+      })
     };
 
     return {
@@ -440,7 +451,7 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
-  ensureAgyAvailable(request.cwd);
+  const agyVersion = ensureAgyAvailable(request.cwd);
 
   if (request.resumeLast) {
     ensureNoActiveTaskJob(workspaceRoot, request.jobId);
@@ -498,7 +509,18 @@ async function executeTaskRun(request) {
     rawOutput,
     touchedFiles,
     unexpectedWrites,
-    conversationId: result.conversationId
+    conversationId: result.conversationId,
+    provenance: buildProvenance({
+      agyVersion,
+      model: request.model || null,
+      effort: request.effort || null,
+      agent: request.agent || null,
+      mode: request.mode || null,
+      conversationId: result.conversationId,
+      gitHead: getHeadCommit(workspaceRoot),
+      scope: request.write ? "write" : "read-only",
+      inputHash: hashText(prompt)
+    })
   };
 
   return {
