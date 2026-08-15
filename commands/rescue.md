@@ -36,7 +36,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" task-resume-candidate --j
 - If the user chooses continue, add `--resume` before routing to the subagent.
 - If the user chooses a new conversation, add `--fresh` before routing to the subagent.
 - If the helper reports `available: false`, do not ask. Route normally.
-- Unlike Codex's `codex resume <session-id>`, agy gives no way to capture or target a specific past conversation id — `--resume` here always means "continue agy's own most-recently-used conversation" (agy's `--continue` flag), not this specific job's thread. Tell the user this if they ask to resume a job other than the most recent one.
+- `--resume` targets this session's specific most-recent rescue job by its captured `conversation_id` (`agy --conversation <id>`), not agy's own "most-recently-used conversation" — so it stays correct even if a review or another task ran an agy process in between. A rescue job from before this capture existed has no `conversation_id` on record; `--resume` falls back to agy's `--continue` for that one job only.
 
 Operating rules:
 

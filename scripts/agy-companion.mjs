@@ -11,7 +11,6 @@ import {
   AgyAuthRequiredError,
   captureGitStatusSnapshot,
   describeHeadlessToolDenial,
-  detectHeadlessToolDenial,
   diffGitStatusSnapshots,
   findUnknownEntryId,
   getAgyAuthStatus,
@@ -21,8 +20,8 @@ import {
   listAgyModels,
   probeHeadlessToolPermission,
   readOutputSchema,
-  runAgyPrompt,
-  runAgyStructured
+  runAgyStructured,
+  runAgyText
 } from "./lib/agy.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
@@ -287,6 +286,27 @@ function ensureNoActiveTaskJob(workspaceRoot, excludeJobId) {
   }
 }
 
+/**
+ * Finds this session's most recent finished task job's captured
+ * `conversation_id`, so `--resume`/`--resume-last` can target that specific
+ * conversation via `agy --conversation <id>` instead of `agy --continue`
+ * ("whatever agy's most-recently-used conversation is" — which drifts to
+ * the wrong thread the moment a review or another task runs an agy process
+ * in between). Returns `null` when there's no resumable job, or when the
+ * candidate job predates conversation-id capture and never recorded one —
+ * callers fall back to `--continue` in that case, same as before this
+ * lookup existed.
+ */
+function findResumeConversationId(workspaceRoot, excludeJobId) {
+  const jobs = filterJobsForCurrentClaudeSession(sortJobsNewestFirst(listJobs(workspaceRoot))).filter((job) => job.id !== excludeJobId);
+  const candidate = findLatestResumableTaskJob(jobs);
+  if (!candidate) {
+    return null;
+  }
+  const stored = readStoredJob(workspaceRoot, candidate.id);
+  return stored?.conversationId ?? stored?.result?.conversationId ?? null;
+}
+
 async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
   const timeoutMs = Math.max(0, Number(options.timeoutMs) || DEFAULT_STATUS_WAIT_TIMEOUT_MS);
   const pollIntervalMs = Math.max(100, Number(options.pollIntervalMs) || DEFAULT_STATUS_POLL_INTERVAL_MS);
@@ -439,9 +459,17 @@ async function executeTaskRun(request) {
   // know it held is to diff the worktree either side of the run.
   const beforeSnapshot = captureGitStatusSnapshot(workspaceRoot);
 
-  const result = await runAgyPrompt(workspaceRoot, {
+  // A specific conversation to target beats agy's own "most recently used"
+  // notion (`--continue`): the latter drifts to the wrong thread the moment
+  // a review or another task runs an agy process in between. Fall back to
+  // `--continue` only when there's a resumable job but it predates
+  // conversation-id capture and never recorded one.
+  const resumeConversationId = request.resumeLast ? findResumeConversationId(workspaceRoot, request.jobId) : null;
+
+  const result = await runAgyText(workspaceRoot, {
     prompt,
-    continueLatest: Boolean(request.resumeLast),
+    conversationId: resumeConversationId ?? undefined,
+    continueLatest: Boolean(request.resumeLast) && !resumeConversationId,
     write: Boolean(request.write),
     // Read-only runs need the flag too: without it a diagnostic task soft-denies
     // on its first tool call and returns nothing. That is what silently broke the
@@ -459,9 +487,8 @@ async function executeTaskRun(request) {
   // Files changed by a run that was never meant to edit anything.
   const unexpectedWrites = request.write ? [] : touchedFiles;
 
-  const rawOutput = typeof result.stdout === "string" ? result.stdout : "";
-  const toolDenial = detectHeadlessToolDenial(result.stderr);
-  const failureMessage = toolDenial ? describeHeadlessToolDenial(toolDenial) : result.stderr ?? "";
+  const rawOutput = result.response;
+  const failureMessage = result.toolDenial ? describeHeadlessToolDenial(result.toolDenial) : result.envelopeError || result.stderr || "";
   const rendered = renderTaskResult(
     { rawOutput, failureMessage },
     { title: taskMetadata.title, jobId: request.jobId ?? null, write: Boolean(request.write), unexpectedWrites }
@@ -470,12 +497,13 @@ async function executeTaskRun(request) {
     status: result.status,
     rawOutput,
     touchedFiles,
-    unexpectedWrites
+    unexpectedWrites,
+    conversationId: result.conversationId
   };
 
   return {
     exitStatus: result.status,
-    conversationResumable: true,
+    conversationResumable: Boolean(result.conversationId),
     payload,
     rendered,
     summary: firstMeaningfulLine(rawOutput, firstMeaningfulLine(failureMessage, `${taskMetadata.title} finished.`)),

@@ -21,7 +21,8 @@ import {
   parseAndValidateStructuredOutput,
   readOutputSchema,
   runAgyPrompt,
-  runAgyStructured
+  runAgyStructured,
+  runAgyText
 } from "../scripts/lib/agy.mjs";
 
 const SCHEMA_PATH = new URL("../schemas/review-output.schema.json", import.meta.url);
@@ -730,4 +731,88 @@ test("runAgyPrompt: builds --agent and --mode from options", async () => {
   };
   await runAgyPrompt("/repo", { prompt: "hello", agent: "reviewer", mode: "accept-edits", spawnImpl });
   assert.deepEqual(capturedArgs, ["--print", "hello", "--agent", "reviewer", "--mode", "accept-edits"]);
+});
+
+// --- runAgyText ---
+
+test("runAgyText: requests --output-format json and returns the envelope's response and conversation_id", async () => {
+  let capturedArgs = null;
+  const spawnImpl = (command, args) => {
+    capturedArgs = args;
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(JSON.stringify({ conversation_id: "conv-42", status: "SUCCESS", response: "done\n" })));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  const result = await runAgyText("/repo", { prompt: "do the thing", spawnImpl });
+  assert.ok(capturedArgs.includes("--output-format"));
+  assert.ok(capturedArgs.includes("json"));
+  assert.equal(result.status, 0);
+  assert.equal(result.response, "done\n");
+  assert.equal(result.conversationId, "conv-42");
+  assert.equal(result.envelopeError, null);
+});
+
+test("runAgyText: passes --conversation through to target a specific past thread", async () => {
+  let capturedArgs = null;
+  const spawnImpl = (command, args) => {
+    capturedArgs = args;
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(JSON.stringify({ conversation_id: "conv-42", status: "SUCCESS", response: "still here\n" })));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  await runAgyText("/repo", { prompt: "continue", conversationId: "conv-42", spawnImpl });
+  assert.ok(capturedArgs.includes("--conversation"));
+  assert.ok(capturedArgs.includes("conv-42"));
+  assert.ok(!capturedArgs.includes("--continue"));
+});
+
+test("runAgyText: falls back to raw stdout as the response when the envelope doesn't parse", async () => {
+  const spawnImpl = fakeSpawnThatSucceeds("plain, non-JSON output\n");
+  const result = await runAgyText("/repo", { prompt: "do the thing", spawnImpl });
+  assert.equal(result.response, "plain, non-JSON output\n");
+  assert.equal(result.conversationId, null);
+});
+
+test("runAgyText: surfaces agy's own error text when the envelope reports a non-SUCCESS status", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit(
+        "data",
+        Buffer.from(
+          JSON.stringify({
+            conversation_id: "",
+            status: "ERROR",
+            response: "",
+            error: "Eligibility check failed: RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota)."
+          })
+        )
+      );
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  const result = await runAgyText("/repo", { prompt: "do the thing", spawnImpl });
+  assert.notEqual(result.status, 0);
+  assert.match(result.envelopeError, /RESOURCE_EXHAUSTED/);
+});
+
+test("runAgyText: reports a soft-denied tool call via toolDenial", async () => {
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(JSON.stringify({ conversation_id: "abc123", status: "SUCCESS", response: "" })));
+      child.stderr.emit("data", Buffer.from(REAL_SOFT_DENY_STDERR));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  const result = await runAgyText("/repo", { prompt: "do the thing", spawnImpl });
+  assert.equal(result.toolDenial?.permission, "command");
 });

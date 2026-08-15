@@ -732,6 +732,67 @@ export async function runAgyStructured(cwd, options = {}) {
 }
 
 /**
+ * Runs `agy --print <prompt> --output-format json` for free-form (non-schema)
+ * text responses, same envelope `runAgyStructured` uses, minus
+ * `--json-schema`. This is what gives a `task`/rescue run a real
+ * `conversation_id` to resume by later — `--resume`/`--resume-last` on the
+ * plain-text path had no envelope to read one from, so it could only ever
+ * fall back to `agy --continue` ("whatever agy's most-recently-used
+ * conversation is"), which drifts to the wrong thread the moment anything
+ * else (a review, another task) runs an agy process in between.
+ *
+ * Deliberately more forgiving than `runAgyStructured`: task/rescue prompts
+ * are free-form, so a response that doesn't fit the envelope shape it
+ * expects is not treated as a hard failure — the raw stdout is returned as
+ * `response` and `conversationId` is `null`, same as before this function
+ * existed, rather than failing a run that would previously have succeeded.
+ */
+export async function runAgyText(cwd, options = {}) {
+  const result = await runAgyPrompt(cwd, { ...options, outputFormat: "json" });
+  const toolDenial = detectHeadlessToolDenial(result.stderr);
+
+  const parsedEnvelope = parseAgyEnvelope(result.stdout);
+  if (!parsedEnvelope.ok) {
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      response: result.stdout,
+      conversationId: null,
+      toolDenial,
+      envelopeError: parsedEnvelope.error
+    };
+  }
+
+  const { envelope } = parsedEnvelope;
+  const conversationId = envelope.conversation_id ?? null;
+  const response = typeof envelope.response === "string" ? envelope.response : "";
+
+  if (envelope.status !== "SUCCESS") {
+    const envelopeError = typeof envelope.error === "string" ? envelope.error.trim() : "";
+    return {
+      status: result.status === 0 ? 1 : result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      response,
+      conversationId,
+      toolDenial,
+      envelopeError: envelopeError || `agy reported status "${envelope.status ?? "unknown"}" instead of SUCCESS.`
+    };
+  }
+
+  return {
+    status: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    response,
+    conversationId,
+    toolDenial,
+    envelopeError: null
+  };
+}
+
+/**
  * Best-effort touched-files detection for write-capable task runs. Codex's
  * app-server reports exact file-change items as part of the turn protocol;
  * agy reports nothing structured, so this instead diffs `git status

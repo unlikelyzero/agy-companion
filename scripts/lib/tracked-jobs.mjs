@@ -141,6 +141,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       ...runningRecord,
       status: completionStatus,
       conversationResumable: execution.conversationResumable ?? false,
+      conversationId: execution.payload?.conversationId ?? null,
       pid: null,
       phase: completionStatus === "completed" ? "done" : "failed",
       completedAt,
