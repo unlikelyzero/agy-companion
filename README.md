@@ -129,6 +129,15 @@ Checks whether the `agy` binary is on `PATH`, and can toggle the stop-time revie
 > [!WARNING]
 > The review gate can create a long-running Claude/agy loop and may drain your `agy` usage quickly. Only enable it when you plan to actively monitor the session.
 
+Pass `--doctor` for a deeper diagnostic pass — the kind of thing worth pasting into a bug report instead of asking someone to run several commands by hand:
+
+```bash
+/agy:setup --doctor
+/agy:setup --doctor --json
+```
+
+Adds: the installed `agy` version against the last one this plugin was verified against ([`.github/agy-tested-version`](.github/agy-tested-version)); which of the flags this plugin depends on (`--json-schema`, `--sandbox`, `--conversation`, etc.) the installed `agy --help` actually recognizes; whether `agy models`/`agy agent` resolve; whether the local job-state directory is writable; whether the current directory is a git repository; and how many jobs are currently active. Everything `--doctor` adds is free (`agy --help` and the listing subcommands spend no quota and start no agent turn) — it composes with the tool-permission probe above rather than replacing it.
+
 ## Differences from codex-plugin-cc
 
 This plugin is a from-scratch port of the structure of the [`codex` Claude Code plugin](https://github.com/openai/codex-plugin-cc), adapted to `agy`'s much smaller and simpler CLI surface. It is **not** a drop-in behavioral clone — this section explains what's actually different before you rely on it for anything Codex's plugin does that this one doesn't.

@@ -177,6 +177,47 @@ test("renderSetupReport: lists checks, actions taken, and next steps", () => {
   assert.match(output, /Next steps:/);
 });
 
+test("renderSetupReport: renders a Doctor section only when report.doctor is present", () => {
+  const base = {
+    ready: true,
+    node: { detail: "v20.0.0" },
+    npm: { detail: "10.0.0" },
+    agy: { detail: "1.1.13" },
+    auth: { detail: "signed in" },
+    toolPermission: { ok: true, detail: "working" },
+    sessionRuntime: { label: "direct invocation" },
+    reviewGateEnabled: false,
+    actionsTaken: [],
+    nextSteps: []
+  };
+
+  assert.doesNotMatch(renderSetupReport(base), /Doctor:/);
+
+  const withDoctor = renderSetupReport({
+    ...base,
+    doctor: {
+      agyVersion: "1.1.13",
+      testedVersion: "1.1.12",
+      versionMatchesTested: false,
+      capabilities: { jsonSchema: true, sandbox: true, conversation: false },
+      models: { ok: true, count: 14, detail: null },
+      agents: { ok: false, count: null, detail: "boom" },
+      stateDirectory: { path: "/tmp/state", writable: false },
+      gitRepository: true,
+      activeJobs: 2
+    }
+  });
+  assert.match(withDoctor, /Doctor:/);
+  assert.match(withDoctor, /agy version: 1\.1\.13 \(last verified: 1\.1\.12 — differs\)/);
+  assert.match(withDoctor, /jsonSchema: yes/);
+  assert.match(withDoctor, /conversation: NO/);
+  assert.match(withDoctor, /models list: ok \(14\)/);
+  assert.match(withDoctor, /agents list: FAILED — boom/);
+  assert.match(withDoctor, /NOT WRITABLE/);
+  assert.match(withDoctor, /git repository: yes/);
+  assert.match(withDoctor, /active jobs: 2/);
+});
+
 test("renderStatusReport: shows a table for running jobs and lists finished ones", () => {
   const output = renderStatusReport({
     sessionRuntime: { label: "direct invocation" },

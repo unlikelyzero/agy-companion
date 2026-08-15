@@ -88,6 +88,11 @@ export function ensureGitRepository(cwd) {
   return result.stdout.trim();
 }
 
+/** Non-throwing form of `ensureGitRepository`, for a diagnostic check like `/agy:setup --doctor`. */
+export function isGitRepository(cwd) {
+  return git(cwd, ["rev-parse", "--show-toplevel"]).status === 0;
+}
+
 export function getRepoRoot(cwd) {
   return gitChecked(cwd, ["rev-parse", "--show-toplevel"]).stdout.trim();
 }

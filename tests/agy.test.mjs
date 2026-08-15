@@ -19,6 +19,7 @@ import {
   listAgyModels,
   parseAgyEnvelope,
   parseAndValidateStructuredOutput,
+  detectAgyCapabilities,
   readOutputSchema,
   runAgyPrompt,
   runAgyStructured,
@@ -815,4 +816,43 @@ test("runAgyText: reports a soft-denied tool call via toolDenial", async () => {
   };
   const result = await runAgyText("/repo", { prompt: "do the thing", spawnImpl });
   assert.equal(result.toolDenial?.permission, "command");
+});
+
+// --- detectAgyCapabilities ---
+
+// Verbatim usage listing from a real agy 1.1.13 install.
+const REAL_HELP_TEXT = `Usage of agy:
+  --add-dir                       Add a directory to the workspace (repeatable) (default [])
+  --agent                         Agent for the current CLI session
+  --conversation                  Resume a previous conversation by ID
+  --dangerously-skip-permissions  Auto-approve all tool permission requests without prompting
+  --json-schema                   Optional JSON schema string or path to a schema file to enforce structured output
+  --mode                          Set the agent execution mode for this session (accept-edits, plan)
+  --output-format                 Output format for print mode (text, json, stream-json) (default text)
+  --sandbox                       Run in a sandbox with terminal restrictions enabled`;
+
+test("detectAgyCapabilities: reports every known flag present in a real help listing", () => {
+  const capabilities = detectAgyCapabilities(REAL_HELP_TEXT);
+  assert.deepEqual(capabilities, {
+    jsonSchema: true,
+    outputFormat: true,
+    conversation: true,
+    sandbox: true,
+    agent: true,
+    mode: true,
+    skipPermissions: true,
+    addDir: true
+  });
+});
+
+test("detectAgyCapabilities: reports missing flags as false against a stale/older help listing", () => {
+  const capabilities = detectAgyCapabilities("Usage of agy:\n  --print   Run a single prompt non-interactively");
+  assert.equal(capabilities.jsonSchema, false);
+  assert.equal(capabilities.sandbox, false);
+  assert.equal(capabilities.conversation, false);
+});
+
+test("detectAgyCapabilities: tolerates null/undefined input", () => {
+  assert.equal(detectAgyCapabilities(null).jsonSchema, false);
+  assert.equal(detectAgyCapabilities(undefined).jsonSchema, false);
 });

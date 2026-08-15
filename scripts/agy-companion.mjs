@@ -11,25 +11,38 @@ import {
   AgyAuthRequiredError,
   captureGitStatusSnapshot,
   describeHeadlessToolDenial,
+  detectAgyCapabilities,
   diffGitStatusSnapshots,
   findUnknownEntryId,
   getAgyAuthStatus,
   getAgyAvailability,
+  getAgyHelpText,
   getSessionRuntimeStatus,
   listAgyAgents,
   listAgyModels,
   probeHeadlessToolPermission,
   readOutputSchema,
+  readTestedAgyVersion,
   runAgyStructured,
   runAgyText
 } from "./lib/agy.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, getHeadCommit, resolveReviewTarget } from "./lib/git.mjs";
+import { collectReviewContext, ensureGitRepository, getHeadCommit, isGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import { buildProvenance, hashText } from "./lib/provenance.mjs";
 import { createReviewSnapshot, diffSnapshotDirectory, captureDirectorySnapshot, REVIEW_CONTEXT_FILE_NAME } from "./lib/review-snapshot.mjs";
-import { generateJobId, getConfig, isActiveJobStatus, listJobs, setConfig, upsertJob, writeJobFile } from "./lib/state.mjs";
+import {
+  generateJobId,
+  getConfig,
+  isActiveJobStatus,
+  isStateDirectoryWritable,
+  listJobs,
+  resolveStateDir,
+  setConfig,
+  upsertJob,
+  writeJobFile
+} from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
@@ -218,10 +231,87 @@ async function buildSetupReport(cwd, actionsTaken = [], options = {}) {
   };
 }
 
+function probeAgyListing(promise) {
+  return promise.then((entries) => ({ ok: true, count: entries.length, detail: null })).catch((error) => ({
+    ok: false,
+    count: null,
+    detail: error instanceof Error ? error.message : String(error)
+  }));
+}
+
+/**
+ * The extra checks a bug report ("agy review missed all my files", "this
+ * worked yesterday") actually needs, bundled behind `--doctor` rather than
+ * run on every plain `/agy:setup` call: a version-drift comparison against
+ * `.github/agy-tested-version`, which of the flags this plugin depends on
+ * the installed `agy` actually recognizes (from `agy --help`, free — no
+ * agent turn), whether `agy models`/`agy agent` (also free) resolve, and
+ * local-only checks (state directory writable, cwd is a git repo, how many
+ * jobs are currently active) that need no `agy` process at all.
+ */
+async function buildDoctorReport(cwd, baseReport) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+
+  let capabilities = null;
+  if (baseReport.agy.available) {
+    try {
+      capabilities = detectAgyCapabilities(getAgyHelpText(cwd));
+    } catch {
+      capabilities = null;
+    }
+  }
+
+  const canListFromAgy = baseReport.agy.available && baseReport.auth.loggedIn === true;
+  const skippedListing = { ok: null, count: null, detail: "Skipped (agy not confirmed signed in)." };
+  const [models, agents] = await Promise.all([
+    canListFromAgy ? probeAgyListing(listAgyModels(cwd)) : Promise.resolve(skippedListing),
+    canListFromAgy ? probeAgyListing(listAgyAgents(cwd)) : Promise.resolve(skippedListing)
+  ]);
+
+  const testedVersion = readTestedAgyVersion();
+  const installedVersion = baseReport.agy.available ? baseReport.agy.detail : null;
+
+  return {
+    agyVersion: installedVersion,
+    testedVersion,
+    versionMatchesTested: testedVersion != null && installedVersion != null ? installedVersion === testedVersion : null,
+    capabilities,
+    models,
+    agents,
+    stateDirectory: {
+      path: resolveStateDir(workspaceRoot),
+      writable: isStateDirectoryWritable(workspaceRoot)
+    },
+    gitRepository: isGitRepository(cwd),
+    activeJobs: listJobs(workspaceRoot).filter((job) => isActiveJobStatus(job.status)).length
+  };
+}
+
+function appendDoctorNextSteps(nextSteps, doctor) {
+  if (doctor.versionMatchesTested === false) {
+    nextSteps.push(
+      `Installed agy (${doctor.agyVersion}) differs from the last version this plugin was verified against ` +
+        `(${doctor.testedVersion}). Not necessarily a problem — re-verify anything that seems suspicious.`
+    );
+  }
+  if (doctor.capabilities?.jsonSchema === false) {
+    nextSteps.push("This agy install does not recognize --json-schema. Run `agy update` — /agy:review and /agy:adversarial-review need it.");
+  }
+  if (doctor.stateDirectory.writable === false) {
+    nextSteps.push(`State directory is not writable: ${doctor.stateDirectory.path}. Background jobs and /agy:status will not work.`);
+  }
+  if (doctor.models.ok === false) {
+    nextSteps.push(`\`agy models\` failed: ${doctor.models.detail}`);
+  }
+  if (doctor.agents.ok === false) {
+    nextSteps.push(`\`agy agent\` failed: ${doctor.agents.detail}`);
+  }
+}
+
 async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "skip-tool-probe"]
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate", "skip-tool-probe", "doctor"]
   });
 
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
@@ -243,6 +333,12 @@ async function handleSetup(argv) {
   const finalReport = await buildSetupReport(cwd, actionsTaken, {
     probeToolPermission: !options["skip-tool-probe"]
   });
+
+  if (options.doctor) {
+    finalReport.doctor = await buildDoctorReport(cwd, finalReport);
+    appendDoctorNextSteps(finalReport.nextSteps, finalReport.doctor);
+  }
+
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 

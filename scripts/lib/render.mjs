@@ -154,6 +154,43 @@ function pushJobDetails(lines, job, options = {}) {
   }
 }
 
+function formatListingCheck(listing) {
+  if (listing.ok === true) {
+    return `ok (${listing.count})`;
+  }
+  if (listing.ok === false) {
+    return `FAILED — ${listing.detail}`;
+  }
+  return listing.detail ?? "unknown";
+}
+
+function pushDoctorSection(lines, doctor) {
+  lines.push("Doctor:");
+  const versionSuffix =
+    doctor.testedVersion == null
+      ? ""
+      : doctor.versionMatchesTested
+        ? ` (matches last verified: ${doctor.testedVersion})`
+        : ` (last verified: ${doctor.testedVersion} — differs)`;
+  lines.push(`- agy version: ${doctor.agyVersion ?? "unknown"}${versionSuffix}`);
+
+  if (doctor.capabilities) {
+    const flags = Object.entries(doctor.capabilities)
+      .map(([flag, present]) => `${flag}: ${present ? "yes" : "NO"}`)
+      .join(", ");
+    lines.push(`- agy flags recognized: ${flags}`);
+  } else {
+    lines.push("- agy flags recognized: unknown (could not run `agy --help`)");
+  }
+
+  lines.push(`- models list: ${formatListingCheck(doctor.models)}`);
+  lines.push(`- agents list: ${formatListingCheck(doctor.agents)}`);
+  lines.push(`- state directory: ${doctor.stateDirectory.path} (${doctor.stateDirectory.writable ? "writable" : "NOT WRITABLE"})`);
+  lines.push(`- git repository: ${doctor.gitRepository ? "yes" : "no"}`);
+  lines.push(`- active jobs: ${doctor.activeJobs}`);
+  lines.push("");
+}
+
 export function renderSetupReport(report) {
   const lines = [
     "# agy Setup",
@@ -172,6 +209,10 @@ export function renderSetupReport(report) {
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     ""
   ];
+
+  if (report.doctor) {
+    pushDoctorSection(lines, report.doctor);
+  }
 
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");

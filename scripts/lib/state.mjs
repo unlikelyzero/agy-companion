@@ -430,3 +430,16 @@ export function writeJobFile(cwd, jobId, payload) {
 export function readJobFile(jobFile) {
   return JSON.parse(fs.readFileSync(jobFile, "utf8"));
 }
+
+/** Round-trips a throwaway probe file through the state directory — for `/agy:setup --doctor`. */
+export function isStateDirectoryWritable(cwd) {
+  try {
+    ensureStateDir(cwd);
+    const probeFile = path.join(resolveStateDir(cwd), `.write-probe-${process.pid}-${Date.now().toString(36)}`);
+    fs.writeFileSync(probeFile, "");
+    fs.unlinkSync(probeFile);
+    return true;
+  } catch {
+    return false;
+  }
+}
