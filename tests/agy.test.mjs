@@ -458,6 +458,64 @@ test("runAgyStructured: surfaces a clear error when agy's envelope reports a non
   assert.match(result.parseError, /status "FAILURE"/);
 });
 
+test("runAgyStructured: keeps a complete structured_output when the envelope reports a cancellation error", async () => {
+  // Real shape from a print-mode run where the model spawned a background
+  // subtask, called finish() with a full review, and agy then cancelled the
+  // orphaned subtask at turn end — flipping the envelope to ERROR while
+  // structured_output still held the finished answer verbatim.
+  const envelope = fakeEnvelope({ status: "ERROR", error: "context canceled" });
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(envelope));
+      child.emit("close", 1, null);
+    });
+    return child;
+  };
+
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: SCHEMA_PATH,
+    spawnImpl
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(result.parseError, null);
+  assert.equal(result.parsed.verdict, "approve");
+  assert.equal(result.conversationId, "conv-1");
+  assert.equal(result.recoveredFromEnvelopeError, "context canceled");
+});
+
+test("runAgyStructured: still fails when a non-SUCCESS envelope's structured_output is incomplete", async () => {
+  // Salvage must not paper over a run that died before finish() produced a
+  // usable payload — a half-written structured_output is still a failure.
+  const envelope = fakeEnvelope({
+    status: "ERROR",
+    error: "context canceled",
+    structured_output: { verdict: "approve" }
+  });
+  const spawnImpl = () => {
+    const child = createFakeChild();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(envelope));
+      child.emit("close", 1, null);
+    });
+    return child;
+  };
+
+  const result = await runAgyStructured("/repo", {
+    prompt: "review this",
+    schema: SCHEMA,
+    schemaPath: SCHEMA_PATH,
+    spawnImpl
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.parsed, null);
+  assert.match(result.parseError, /context canceled/);
+});
+
 test("runAgyStructured: fails local re-validation if structured_output doesn't actually match the schema", async () => {
   const spawnImpl = () => {
     const child = createFakeChild();

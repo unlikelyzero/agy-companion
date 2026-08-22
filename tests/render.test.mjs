@@ -39,6 +39,29 @@ test("renderReviewResult: renders a well-formed structured review", () => {
   assert.match(output, /Add the guard and retest\./);
 });
 
+test("renderReviewResult: notes a run-level error that the review survived", () => {
+  const output = renderReviewResult(
+    {
+      parsed: { verdict: "approve", summary: "Looks fine.", findings: [], next_steps: [] },
+      parseError: null,
+      recoveredFromEnvelopeError: "context canceled"
+    },
+    { reviewLabel: "Review", targetLabel: "working tree diff" }
+  );
+  assert.match(output, /Verdict: approve/);
+  assert.match(output, /agy reported a run-level error/);
+  assert.match(output, /context canceled/);
+  assert.match(output, /Looks fine\./);
+});
+
+test("renderReviewResult: adds no run-level note when the run was clean", () => {
+  const output = renderReviewResult(
+    { parsed: { verdict: "approve", summary: "Looks fine.", findings: [], next_steps: [] }, parseError: null },
+    { reviewLabel: "Review", targetLabel: "working tree diff" }
+  );
+  assert.doesNotMatch(output, /run-level error/);
+});
+
 test("renderReviewResult: surfaces a parse error with raw output", () => {
   const output = renderReviewResult(
     { parsed: null, parseError: "Unexpected token", rawOutput: "not json" },

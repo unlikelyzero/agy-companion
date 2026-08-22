@@ -473,6 +473,7 @@ async function executeReviewRun(request) {
       parsed: result.parsed,
       parseError: result.parseError,
       toolDenial: result.toolDenial ?? null,
+      recoveredFromEnvelopeError: result.recoveredFromEnvelopeError ?? null,
       rawOutput: result.stdout
     };
     const payload = {
@@ -497,6 +498,7 @@ async function executeReviewRun(request) {
       rawOutput: parsed.rawOutput,
       parseError: parsed.parseError,
       toolDenial: parsed.toolDenial,
+      recoveredFromEnvelopeError: parsed.recoveredFromEnvelopeError,
       unexpectedWrites,
       conversationId: result.conversationId ?? null,
       retried: result.retried,
