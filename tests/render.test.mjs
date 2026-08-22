@@ -62,6 +62,57 @@ test("renderReviewResult: adds no run-level note when the run was clean", () => 
   assert.doesNotMatch(output, /run-level error/);
 });
 
+function reviewWithTitle(title) {
+  return {
+    parsed: {
+      verdict: "needs-attention",
+      summary: "One finding.",
+      findings: [
+        {
+          severity: "high",
+          title,
+          body: "This can throw.",
+          file: "src/index.js",
+          line_start: 10,
+          line_end: 12,
+          confidence: 0.8,
+          recommendation: "Add a guard."
+        }
+      ],
+      next_steps: []
+    },
+    parseError: null
+  };
+}
+
+function findingLine(output) {
+  return output.split("\n").find((line) => line.startsWith("- [high]"));
+}
+
+test("renderReviewResult: truncates an over-long finding title", () => {
+  const title = `Unbounded retry loop in ${"x".repeat(120)} blocks the gate`;
+  const line = findingLine(renderReviewResult(reviewWithTitle(title), { reviewLabel: "Review", targetLabel: "t" }));
+  assert.ok(line.includes("…"), "expected the title to be elided");
+  assert.match(line, /\(src\/index\.js:10-12\)$/, "file:line suffix must survive truncation");
+});
+
+test("renderReviewResult: keeps a multi-line finding title on one line", () => {
+  const output = renderReviewResult(
+    reviewWithTitle("Race condition\nin job state writer"),
+    { reviewLabel: "Review", targetLabel: "t" }
+  );
+  const line = findingLine(output);
+  assert.equal(line, "- [high] Race condition in job state writer (src/index.js:10-12)");
+});
+
+test("renderReviewResult: does not emit a lone surrogate for an emoji title", () => {
+  const line = findingLine(
+    renderReviewResult(reviewWithTitle("\u{1F525}".repeat(90)), { reviewLabel: "Review", targetLabel: "t" })
+  );
+  assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(line), "lone high surrogate in rendered line");
+  assert.ok(!/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(line), "lone low surrogate in rendered line");
+});
+
 test("renderReviewResult: surfaces a parse error with raw output", () => {
   const output = renderReviewResult(
     { parsed: null, parseError: "Unexpected token", rawOutput: "not json" },
