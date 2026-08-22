@@ -319,7 +319,21 @@ function renderReviewResultBody(parsedResult, meta) {
 
   const data = normalizeReviewResultData(parsedResult.parsed);
   const findings = [...data.findings].sort((left, right) => severityRank(left.severity) - severityRank(right.severity));
-  const lines = [`# agy ${meta.reviewLabel}`, "", `Target: ${meta.targetLabel}`, `Verdict: ${data.verdict}`, "", data.summary, ""];
+  const lines = [`# agy ${meta.reviewLabel}`, "", `Target: ${meta.targetLabel}`, `Verdict: ${data.verdict}`, ""];
+
+  // The review below is a complete, schema-valid answer that agy nonetheless
+  // filed under a non-SUCCESS status — usually turn-end cleanup cancelling a
+  // background subtask the model spawned. Say so rather than pass it off as
+  // a clean run, so a reader who cares can go check the transcript.
+  if (parsedResult.recoveredFromEnvelopeError) {
+    lines.push(
+      `> Note: agy reported a run-level error after producing this review — ${parsedResult.recoveredFromEnvelopeError}`,
+      "> The structured result was complete and valid, so it is shown here rather than discarded.",
+      ""
+    );
+  }
+
+  lines.push(data.summary, "");
 
   if (findings.length === 0) {
     lines.push("No material findings.");

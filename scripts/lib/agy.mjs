@@ -686,6 +686,7 @@ export async function runAgyStructured(cwd, options = {}) {
       parseError: toolDenial
         ? describeHeadlessToolDenial(toolDenial)
         : `${parsedEnvelope.error}${stderrHint}`,
+      recoveredFromEnvelopeError: null,
       retried: false
     };
   }
@@ -694,6 +695,39 @@ export async function runAgyStructured(cwd, options = {}) {
   const conversationId = envelope.conversation_id ?? null;
 
   if (envelope.status !== "SUCCESS") {
+    // agy puts the real reason in the envelope's `error` field — quota
+    // exhaustion ("RESOURCE_EXHAUSTED (code 429)"), backend failures, and so
+    // on. Reporting only the status and dumping the raw envelope buries a
+    // perfectly clear message under a "parse error" heading that sends people
+    // looking for a malformed-output bug instead of, say, topping up quota.
+    const envelopeError = typeof envelope.error === "string" ? envelope.error.trim() : "";
+
+    // A run can produce a complete, schema-valid answer and still report
+    // ERROR. The model spawns a background subtask mid-turn, calls finish()
+    // with a real payload, and agy then cancels the orphaned subtask during
+    // turn-end cleanup — that "context canceled" becomes the envelope's
+    // terminal status even though `structured_output` holds the finished
+    // review verbatim (google-antigravity/antigravity-cli#848).
+    // Throwing away a finished, expensive review because of cleanup that
+    // happened after the answer was already produced is the worse failure,
+    // so accept the payload when it is genuinely there and still validates,
+    // and hand the caller the disagreeing status so it can be reported.
+    if (envelope.structured_output !== undefined && envelope.structured_output !== null) {
+      const salvaged = normalizeReviewPayload(envelope.structured_output);
+      if (validateAgainstSchema(salvaged, options.schema).valid) {
+        return {
+          status: 0,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          parsed: salvaged,
+          conversationId,
+          parseError: null,
+          recoveredFromEnvelopeError: envelopeError || `agy reported status "${envelope.status ?? "unknown"}" instead of SUCCESS.`,
+          retried: false
+        };
+      }
+    }
+
     // Some runs skip the envelope entirely and put the review payload at the
     // top level of stdout, where its own "status"/"verdict" field collides
     // with the envelope's SUCCESS status. If the top-level object itself
@@ -707,15 +741,10 @@ export async function runAgyStructured(cwd, options = {}) {
         parsed: bare,
         conversationId,
         parseError: null,
+        recoveredFromEnvelopeError: null,
         retried: false
       };
     }
-    // agy puts the real reason in the envelope's `error` field — quota
-    // exhaustion ("RESOURCE_EXHAUSTED (code 429)"), backend failures, and so
-    // on. Reporting only the status and dumping the raw envelope buries a
-    // perfectly clear message under a "parse error" heading that sends people
-    // looking for a malformed-output bug instead of, say, topping up quota.
-    const envelopeError = typeof envelope.error === "string" ? envelope.error.trim() : "";
     return {
       status: 1,
       stdout: result.stdout,
@@ -725,6 +754,7 @@ export async function runAgyStructured(cwd, options = {}) {
       parseError: envelopeError
         ? `agy failed to run this request: ${envelopeError}`
         : `agy reported status "${envelope.status ?? "unknown"}" instead of SUCCESS.`,
+      recoveredFromEnvelopeError: null,
       retried: false
     };
   }
@@ -740,6 +770,7 @@ export async function runAgyStructured(cwd, options = {}) {
       parseError: toolDenial
         ? describeHeadlessToolDenial(toolDenial)
         : "agy reported SUCCESS but returned no structured_output.",
+      recoveredFromEnvelopeError: null,
       retried: false
     };
   }
@@ -754,6 +785,7 @@ export async function runAgyStructured(cwd, options = {}) {
       parsed: null,
       conversationId,
       parseError: `agy's structured_output did not match the schema on local re-validation: ${errors[0]}`,
+      recoveredFromEnvelopeError: null,
       retried: false
     };
   }
@@ -765,6 +797,7 @@ export async function runAgyStructured(cwd, options = {}) {
     parsed: structuredOutput,
     conversationId,
     parseError: null,
+    recoveredFromEnvelopeError: null,
     retried: false
   };
 }
