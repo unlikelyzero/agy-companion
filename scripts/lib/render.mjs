@@ -1,4 +1,5 @@
 import { isActiveJobStatus, isTerminalJobStatus } from "./state.mjs";
+import { DEFAULT_TITLE_DISPLAY_LENGTH, truncateForDisplay } from "./text.mjs";
 
 function severityRank(severity) {
   switch (severity) {
@@ -341,7 +342,7 @@ function renderReviewResultBody(parsedResult, meta) {
     lines.push("Findings:");
     for (const finding of findings) {
       const lineSuffix = formatLineRange(finding);
-      lines.push(`- [${finding.severity}] ${finding.title} (${finding.file}${lineSuffix})`);
+      lines.push(`- [${finding.severity}] ${truncateForDisplay(finding.title, DEFAULT_TITLE_DISPLAY_LENGTH)} (${finding.file}${lineSuffix})`);
       lines.push(`  ${finding.body}`);
       if (finding.recommendation) {
         lines.push(`  Recommendation: ${finding.recommendation}`);
