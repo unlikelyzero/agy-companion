@@ -9,8 +9,10 @@ name: agy release probe
 # against .github/agy-help-snapshot.txt, since a version-number bump alone
 # says nothing about *what* changed — new/removed flags or subcommands are a
 # much more direct signal of what a compatibility pass should actually look
-# at. When either the version or the --help output changed, it opens a
-# tracking issue prompting a manual compatibility pass.
+# at. When either the version or the --help output changed, it maintains a
+# single rolling tracking issue (labelled agy-compatibility) prompting a
+# manual compatibility pass: retitled and rewritten for the current release,
+# with each change recorded as a comment.
 
 on:
   schedule:
@@ -80,21 +82,13 @@ jobs:
           NEW_RELEASE: ${{ steps.compare.outputs.new_release }}
           HAS_HELP_DIFF: ${{ steps.help_diff.outputs.has_diff }}
           HELP_DIFF: ${{ steps.help_diff.outputs.diff }}
+          LABEL: agy-compatibility
         run: |
           if [ "$NEW_RELEASE" = "true" ]; then
             title="New agy release $LATEST needs a compatibility pass"
-          else
-            title="agy $LATEST changed its --help output without a version bump"
-          fi
-          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq 'length')"
-          if [ "$existing" != "0" ]; then
-            echo "Tracking issue already open, skipping."
-            exit 0
-          fi
-
-          if [ "$NEW_RELEASE" = "true" ]; then
             version_line="The nightly probe found agy \`$LATEST\` available; the plugin was last verified against \`$TESTED\`."
           else
+            title="agy $LATEST changed its --help output without a version bump"
             version_line="The nightly probe found that \`agy --help\` output changed on the already-tested \`$LATEST\`, with no version bump to signal it."
           fi
 
@@ -119,4 +113,27 @@ jobs:
           2. Run \`agy changelog\` for any release notes (sparse in practice, but worth a look) and review the \`--help\` diff above for new/changed/removed flags or subcommands this plugin should adopt or account for.
           3. Run the manual checklist in \`docs/TESTING.md\`, covering the full command lifecycle: \`/agy:review\` and \`/agy:adversarial-review\` (confirming the \`--output-format json --json-schema\` envelope still parses), \`/agy:rescue\` foreground and \`--background\`, \`/agy:status\`, \`/agy:result\`, \`/agy:cancel\`, and \`--resume-last\`.
           4. Update \`.github/agy-tested-version\` to \`$LATEST\` and \`.github/agy-help-snapshot.txt\` to the current \`agy --help\` output, and commit both."
-          gh issue create --title "$title" --body "$body"
+
+          # One rolling tracking issue, found by label rather than by title: the
+          # title embeds the version, so matching on it filed a fresh issue for
+          # every release instead of updating the open one.
+          existing="$(gh issue list --state open --label "$LABEL" --limit 1 --json number --jq '.[0].number // empty')"
+
+          if [ -z "$existing" ]; then
+            gh label create "$LABEL" --description "Rolling agy compatibility tracking issue" --color EDEDED 2>/dev/null || true
+            gh issue create --title "$title" --body "$body" --label "$LABEL"
+            exit 0
+          fi
+
+          if [ "$(gh issue view "$existing" --json body --jq .body | tr -d '\r')" = "$body" ]; then
+            echo "Tracking issue #$existing already describes this state, nothing to do."
+            exit 0
+          fi
+
+          # Retitle and rewrite the body so the version in the title and in the
+          # step-4 bump instruction both track the current release, then record
+          # what changed as a comment so the history is not lost.
+          gh issue edit "$existing" --title "$title" --body "$body"
+          gh issue comment "$existing" --body "Nightly probe update — $version_line
+
+          $help_section"
