@@ -18,7 +18,7 @@ Usage of agy:
   -p                              Short alias for --print
   --print                         Run a single prompt non-interactively and print the response
   --print-timeout                 Timeout for print mode wait (default 5m0s)
-  --project                       Project ID for the current CLI session
+  --project                       Project ID or project name for the current CLI session
   --prompt                        Alias for --print
   --prompt-interactive            Run an initial prompt interactively and continue the session
   --sandbox                       Run in a sandbox with terminal restrictions enabled
@@ -30,7 +30,9 @@ Available subcommands:
   help            Show help for subcommands
   install         Configure environment paths and shell settings
   mcp             Manage MCP servers (add, remove, list, enable, disable)
+  mic-serve       Serve this machine's microphone to a CLI on another host
   models          List available models
   plugin          Manage plugins (install, uninstall, list, enable, disable)
   plugins         Alias for plugin
+  remote-control  Manage the remote-control background daemon (start, status, stop)
   update          Update CLI

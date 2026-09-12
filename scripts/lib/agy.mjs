@@ -538,14 +538,42 @@ export function runAgyPrompt(cwd, options = {}) {
   });
 }
 
+function isParsableJson(text) {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pulls the JSON payload out of text that may or may not have prose or a
+ * markdown fence wrapped around it.
+ *
+ * Order matters. agy's `--output-format json` envelope arrives as a bare JSON
+ * object whose `response` string routinely contains a fenced code block
+ * (anything where the model shows a snippet). Checking the fence pattern
+ * first matched that *inner* fence and returned the snippet instead of the
+ * envelope, so the parse failed and `runAgyText` fell back to raw stdout —
+ * printing the whole envelope at the user and dropping `conversation_id`,
+ * which silently cost the job its targeted `--resume-last` thread. Trying the
+ * payload as-is first keeps a self-contained envelope intact; the fence and
+ * brace-slice paths remain for a model reply that really is JSON wrapped in
+ * prose.
+ */
 function extractJsonCandidate(text) {
   const trimmed = String(text ?? "").trim();
   if (!trimmed) {
     return null;
   }
 
+  if (isParsableJson(trimmed)) {
+    return trimmed;
+  }
+
   const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenceMatch) {
+  if (fenceMatch && isParsableJson(fenceMatch[1].trim())) {
     return fenceMatch[1].trim();
   }
 
@@ -879,9 +907,26 @@ export function captureGitStatusSnapshot(cwd) {
   return new Set(
     result.stdout
       .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
+      .filter((line) => line.trim().length > 0)
   );
+}
+
+/**
+ * Recovers the path from one `git status --porcelain` v1 line.
+ *
+ * The format is a fixed two-column status code, a space, then the path, so
+ * the path always starts at index 3 — including when the first column is a
+ * space, as it is for an unstaged modification (` M file`). Lines must
+ * therefore reach here untrimmed: trimming ` M existing.txt` down to
+ * `M existing.txt` and then dropping three characters ate the path's first
+ * letter and reported `xisting.txt` as the touched file. A rename or copy
+ * carries both paths (`R  old -> new`); the destination is the one that
+ * exists after the run.
+ */
+function parseGitStatusPath(line) {
+  const path = line.slice(3).trim();
+  const arrow = path.lastIndexOf(" -> ");
+  return arrow === -1 ? path : path.slice(arrow + 4).trim();
 }
 
 export function diffGitStatusSnapshots(before, after) {
@@ -891,14 +936,15 @@ export function diffGitStatusSnapshots(before, after) {
   const changed = new Set();
   for (const line of after) {
     if (!before.has(line)) {
-      changed.add(line.replace(/^.{0,3}\s*/, ""));
+      changed.add(parseGitStatusPath(line));
     }
   }
   for (const line of before) {
     if (!after.has(line)) {
-      changed.add(line.replace(/^.{0,3}\s*/, ""));
+      changed.add(parseGitStatusPath(line));
     }
   }
+  changed.delete("");
   return [...changed].sort();
 }
 

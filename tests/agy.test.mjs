@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,6 +13,7 @@ import {
   AgyUnsupportedFeatureError,
   describeHeadlessToolDenial,
   detectHeadlessToolDenial,
+  captureGitStatusSnapshot,
   diffGitStatusSnapshots,
   findUnknownEntryId,
   getAgyAuthStatus,
@@ -632,6 +634,74 @@ test("diffGitStatusSnapshots: reports files that appear or disappear between sna
 
 test("diffGitStatusSnapshots: returns an empty list when either snapshot is missing", () => {
   assert.deepEqual(diffGitStatusSnapshots(null, new Set(["?? a"])), []);
+});
+
+test("diffGitStatusSnapshots: keeps the whole path of an unstaged modification", () => {
+  // ` M` leaves column one blank, so the path still starts at index 3. The
+  // end-to-end case that actually regressed is the live-repo test below, where
+  // the capture step is what dropped the leading space; this one pins the
+  // column rule the parser relies on.
+  const before = new Set(["?? untouched.txt"]);
+  const after = new Set(["?? untouched.txt", " M existing.txt"]);
+  assert.deepEqual(diffGitStatusSnapshots(before, after), ["existing.txt"]);
+});
+
+test("diffGitStatusSnapshots: handles staged, untracked, and renamed entries", () => {
+  const before = new Set([]);
+  const after = new Set(["M  staged.txt", "?? created.txt", "R  old/name.txt -> new/name.txt", "MM both.txt"]);
+  assert.deepEqual(diffGitStatusSnapshots(before, after), [
+    "both.txt",
+    "created.txt",
+    "new/name.txt",
+    "staged.txt"
+  ]);
+});
+
+test("captureGitStatusSnapshot/diffGitStatusSnapshots: report a real edit to a tracked file", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-status-"));
+  try {
+    const git = (args) => execFileSync("git", args, { cwd: dir, stdio: "pipe" });
+    git(["init", "-q", "."]);
+    git(["config", "user.email", "test@example.com"]);
+    git(["config", "user.name", "Test"]);
+    fs.writeFileSync(path.join(dir, "existing.txt"), "line one\n");
+    git(["add", "-A"]);
+    git(["commit", "-qm", "init"]);
+
+    const before = captureGitStatusSnapshot(dir);
+    fs.appendFileSync(path.join(dir, "existing.txt"), "line two\n");
+    fs.writeFileSync(path.join(dir, "created.txt"), "new\n");
+    const after = captureGitStatusSnapshot(dir);
+
+    assert.deepEqual(diffGitStatusSnapshots(before, after), ["created.txt", "existing.txt"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseAgyEnvelope: parses an envelope whose response contains a fenced code block", () => {
+  // Real 1.2.2 output: any answer that shows a snippet puts ``` inside the
+  // envelope's `response` string. Matching that fence first returned the
+  // snippet instead of the envelope, so the parse failed, the raw envelope got
+  // printed at the user, and `conversation_id` was lost along with the job's
+  // targeted resume thread.
+  const envelope = JSON.stringify({
+    conversation_id: "conv-fenced",
+    status: "SUCCESS",
+    response: "Created `created.txt` with the content:\n```\nHELLO\n```\n"
+  });
+  const result = parseAgyEnvelope(`${envelope}\n`);
+  assert.equal(result.ok, true);
+  assert.equal(result.envelope.conversation_id, "conv-fenced");
+  assert.match(result.envelope.response, /HELLO/);
+});
+
+test("parseAndValidateStructuredOutput: still reads a payload wrapped in a markdown fence", () => {
+  const payload = { verdict: "approve", summary: "fine", findings: [], next_steps: [] };
+  const schema = SCHEMA;
+  const result = parseAndValidateStructuredOutput("Here you go:\n```json\n" + JSON.stringify(payload) + "\n```", schema);
+  assert.equal(result.ok, true, result.error ?? "");
+  assert.equal(result.data.verdict, "approve");
 });
 
 // --- getAgyAuthStatus: free /quota-based login probe (verified live 2026-08 — see .github/agy-tested-version) ---
