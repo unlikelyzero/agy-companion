@@ -113,7 +113,7 @@ export function getAgyAvailability(cwd) {
  * of agy even recognize this flag" the way `AgyUnsupportedFeatureError`
  * already does reactively, but as a proactive `/agy:setup --doctor` check.
  */
-const AGY_CAPABILITY_FLAGS = {
+export const AGY_CAPABILITY_FLAGS = {
   jsonSchema: "--json-schema",
   outputFormat: "--output-format",
   conversation: "--conversation",
