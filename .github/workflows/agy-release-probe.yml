@@ -9,10 +9,16 @@ name: agy release probe
 # against .github/agy-help-snapshot.txt, since a version-number bump alone
 # says nothing about *what* changed — new/removed flags or subcommands are a
 # much more direct signal of what a compatibility pass should actually look
-# at. When either the version or the --help output changed, it maintains a
-# single rolling tracking issue (labelled agy-compatibility) prompting a
-# manual compatibility pass: retitled and rewritten for the current release,
-# with each change recorded as a comment.
+# at. Finally it checks every flag and subcommand the installed agy lists
+# against .github/agy-surface.json, which records a decision (used, or
+# considered and why) for each one, so a release that adds a capability can't
+# be absorbed by a snapshot refresh with nobody deciding what it means here.
+# npm test enforces the same check against the tracked snapshot, where no agy
+# binary is available. When the version changed, the --help output changed, or
+# something has no recorded decision, it maintains a single rolling tracking
+# issue (labelled agy-compatibility) prompting a manual compatibility pass:
+# retitled and rewritten for the current release, with each change recorded as
+# a comment.
 
 on:
   schedule:
@@ -73,8 +79,23 @@ jobs:
             echo "EOF_HELP_DIFF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Check agy's CLI surface against the recorded inventory
+        id: surface
+        run: |
+          if node scripts/agy-surface-check.mjs /tmp/agy-help-current.txt > /tmp/agy-surface.txt 2>&1; then
+            echo "unclassified=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "unclassified=true" >> "$GITHUB_OUTPUT"
+          fi
+          cat /tmp/agy-surface.txt
+          {
+            echo "report<<EOF_SURFACE"
+            cat /tmp/agy-surface.txt
+            echo "EOF_SURFACE"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Open tracking issue for new release or capability change
-        if: steps.compare.outputs.new_release == 'true' || steps.help_diff.outputs.has_diff == 'true'
+        if: steps.compare.outputs.new_release == 'true' || steps.help_diff.outputs.has_diff == 'true' || steps.surface.outputs.unclassified == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           LATEST: ${{ steps.version.outputs.latest }}
@@ -82,14 +103,19 @@ jobs:
           NEW_RELEASE: ${{ steps.compare.outputs.new_release }}
           HAS_HELP_DIFF: ${{ steps.help_diff.outputs.has_diff }}
           HELP_DIFF: ${{ steps.help_diff.outputs.diff }}
+          HAS_UNCLASSIFIED: ${{ steps.surface.outputs.unclassified }}
+          SURFACE_REPORT: ${{ steps.surface.outputs.report }}
           LABEL: agy-compatibility
         run: |
           if [ "$NEW_RELEASE" = "true" ]; then
             title="New agy release $LATEST needs a compatibility pass"
             version_line="The nightly probe found agy \`$LATEST\` available; the plugin was last verified against \`$TESTED\`."
-          else
+          elif [ "$HAS_HELP_DIFF" = "true" ]; then
             title="agy $LATEST changed its --help output without a version bump"
             version_line="The nightly probe found that \`agy --help\` output changed on the already-tested \`$LATEST\`, with no version bump to signal it."
+          else
+            title="agy $LATEST has CLI surface entries with no recorded decision"
+            version_line="The nightly probe found flags or subcommands on the already-tested \`$LATEST\` that \`.github/agy-surface.json\` does not account for."
           fi
 
           if [ "$HAS_HELP_DIFF" = "true" ]; then
@@ -103,16 +129,27 @@ jobs:
             help_section="\`agy --help\` output is unchanged from the last snapshot — this release likely only touched internals, not the CLI surface this plugin depends on."
           fi
 
+          if [ "$HAS_UNCLASSIFIED" = "true" ]; then
+            surface_section="These entries have no recorded decision in \`.github/agy-surface.json\`. \`npm test\` fails until each is classified \`used\` or \`considered\` with a reason, so this is the part of the pass that cannot be skipped:
+
+          $SURFACE_REPORT
+          "
+          else
+            surface_section="Every flag and subcommand this agy lists already has a recorded decision in \`.github/agy-surface.json\`."
+          fi
+
           body="$version_line
 
           $help_section
+
+          $surface_section
 
           agy has no non-interactive auth, so this cannot be tested on a hosted runner. To close this issue:
 
           1. Update agy locally (\`curl -fsSL https://antigravity.google/cli/install.sh | bash\`) and confirm \`agy --version\` reports \`$LATEST\`.
           2. Run \`agy changelog\` for any release notes (sparse in practice, but worth a look) and review the \`--help\` diff above for new/changed/removed flags or subcommands this plugin should adopt or account for.
           3. Run the manual checklist in \`docs/TESTING.md\`, covering the full command lifecycle: \`/agy:review\` and \`/agy:adversarial-review\` (confirming the \`--output-format json --json-schema\` envelope still parses), \`/agy:rescue\` foreground and \`--background\`, \`/agy:status\`, \`/agy:result\`, \`/agy:cancel\`, and \`--resume-last\`.
-          4. Update \`.github/agy-tested-version\` to \`$LATEST\` and \`.github/agy-help-snapshot.txt\` to the current \`agy --help\` output, and commit both."
+          4. Update \`.github/agy-tested-version\` to \`$LATEST\`, \`.github/agy-help-snapshot.txt\` to the current \`agy --help\` output, and \`.github/agy-surface.json\` with an entry for anything new plus its \`reviewedAgainstVersion\`, then commit all three. \`npm test\` enforces that the snapshot and the inventory agree."
 
           # One rolling tracking issue, found by label rather than by title: the
           # title embeds the version, so matching on it filed a fresh issue for

@@ -1,0 +1,43 @@
+{
+  "comment": "Every flag and subcommand in .github/agy-help-snapshot.txt, each with a recorded decision. tests/agy-surface.test.mjs fails when the snapshot and this file disagree, so refreshing the snapshot for a new agy release forces a decision on whatever that release added. status is either \"used\" (agy-companion passes it) or \"considered\" (deliberately not used, with the reason). See docs/TESTING.md.",
+  "reviewedAgainstVersion": "1.2.2",
+  "flags": {
+    "--add-dir": { "status": "used", "note": "Extra workspace roots for a review or task run." },
+    "--agent": { "status": "used", "note": "Optional named agent on /agy:rescue." },
+    "-c": { "status": "considered", "note": "Short alias for --continue; the long form is spelled out at call sites." },
+    "--continue": { "status": "used", "note": "Fallback resume for a job recorded before per-job conversation ids were captured." },
+    "--conversation": { "status": "used", "note": "Targeted resume of one specific past job's conversation." },
+    "--dangerously-skip-permissions": { "status": "used", "note": "The only mechanism that makes headless tool calls work at all; reviews run against a disposable snapshot to bound it." },
+    "--disable-slash-commands": { "status": "considered", "note": "Not used. Reviews and tasks send prose prompts, and the free /quota login probe in getAgyAuthStatus depends on slash commands still expanding." },
+    "--effort": { "status": "used", "note": "Reasoning effort on /agy:rescue, recorded in provenance." },
+    "-i": { "status": "considered", "note": "Short alias for --prompt-interactive; nothing here runs interactively." },
+    "--input-format": { "status": "considered", "note": "Not used. stream-json would let one agy process handle several turns, but every call here is a single prompt and needs --output-format stream-json to match." },
+    "--json-schema": { "status": "used", "note": "Schema enforcement for review output." },
+    "--log-file": { "status": "considered", "note": "Not used. Per-job logs are written by agy-companion itself under the job's state directory." },
+    "--mode": { "status": "used", "note": "accept-edits / plan on /agy:rescue." },
+    "--model": { "status": "used", "note": "Optional model override, recorded in provenance." },
+    "--new-project": { "status": "considered", "note": "Not used. Jobs run against the user's existing workspace, not a fresh agy project." },
+    "--output-format": { "status": "used", "note": "json, for both the review envelope and the task envelope." },
+    "-p": { "status": "considered", "note": "Short alias for --print; the long form is spelled out at call sites." },
+    "--print": { "status": "used", "note": "Every agy call this plugin makes is a single non-interactive prompt." },
+    "--print-timeout": { "status": "considered", "note": "Not used. Timeouts are enforced on this side in runAgyPrompt so a hung run surfaces as AgyTimeoutError with the job's own tail." },
+    "--project": { "status": "considered", "note": "Not used. No project selection is exposed; runs use whatever the install defaults to." },
+    "--prompt": { "status": "considered", "note": "Alias for --print." },
+    "--prompt-interactive": { "status": "considered", "note": "Not used. Nothing here runs interactively." },
+    "--sandbox": { "status": "used", "note": "Terminal restrictions, probed by /agy:setup --doctor." }
+  },
+  "subcommands": {
+    "agent": { "status": "used", "note": "Custom-agent listing in /agy:setup --doctor." },
+    "agents": { "status": "considered", "note": "Alias for agent." },
+    "changelog": { "status": "considered", "note": "Not called in code. Read by hand during a compatibility pass." },
+    "help": { "status": "considered", "note": "Subcommand help. The top-level agy --help is what capability detection reads." },
+    "install": { "status": "considered", "note": "Not used. Shell/path setup is the user's own install step." },
+    "mcp": { "status": "considered", "note": "Not used. This plugin adds no MCP servers to agy." },
+    "mic-serve": { "status": "considered", "note": "Not used. Microphone sharing has no headless review or task equivalent." },
+    "models": { "status": "used", "note": "Model listing in /agy:setup --doctor." },
+    "plugin": { "status": "considered", "note": "Not used. agy's own plugin system is separate from this Claude Code plugin." },
+    "plugins": { "status": "considered", "note": "Alias for plugin." },
+    "remote-control": { "status": "considered", "note": "Not used. Background daemon for driving agy from another host; jobs here are spawned directly." },
+    "update": { "status": "considered", "note": "Not called in code. Used by hand to pick up a new release during a compatibility pass." }
+  }
+}

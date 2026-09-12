@@ -109,3 +109,28 @@ test("no version bump, --help changed: still files the no-bump variant", () => {
   assert.ok(calls.some((c) => c.includes("changed its --help output without a version bump")));
   assert.ok(createdBody.includes("with no version bump to signal it"));
 });
+
+test("unclassified surface entries: the issue body names them and the step-4 bump", () => {
+  const { createdBody } = run({
+    env: {
+      HAS_UNCLASSIFIED: "true",
+      SURFACE_REPORT: "- unclassified subcommand `mic-serve` — add it to .github/agy-surface.json with a status and a reason.",
+    },
+  });
+  assert.match(createdBody, /unclassified subcommand `mic-serve`/);
+  assert.match(createdBody, /cannot be skipped/);
+  assert.ok(createdBody.includes(".github/agy-surface.json` with an entry for anything new"));
+});
+
+test("nothing unclassified: the issue body says the surface is accounted for", () => {
+  const { createdBody } = run({ env: { HAS_UNCLASSIFIED: "false" } });
+  assert.match(createdBody, /already has a recorded decision/);
+});
+
+test("surface entries unclassified with no version or help change: files the surface variant", () => {
+  const { calls, createdBody } = run({
+    env: { NEW_RELEASE: "false", HAS_HELP_DIFF: "false", HAS_UNCLASSIFIED: "true", SURFACE_REPORT: "- unclassified flag `--telepathy`" },
+  });
+  assert.ok(calls.some((c) => c.includes("has CLI surface entries with no recorded decision")), calls.join("\n"));
+  assert.match(createdBody, /does not account for/);
+});
