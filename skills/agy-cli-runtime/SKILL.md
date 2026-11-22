@@ -17,7 +17,7 @@ Execution rules:
 - Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel` from `agy:agy-rescue`.
 - Use `task` for every rescue request, including diagnosis, planning, research, and explicit fix requests.
 - Default to a write-capable agy run by adding `--write` unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits.
-- `--model <model>` and `--effort <low|medium|high>` are real agy flags — forward them when the calling command passes them through. Do not invent a value the caller didn't supply.
+- `--model <model>` and `--effort <low|medium|high|xhigh|max>` are real agy flags — forward them when the calling command passes them through. Do not invent a value the caller didn't supply.
 - The task text this subagent receives may already be a normalized implementation contract (Goal / Repository Context / Acceptance Criteria / Files Likely Involved / How to Verify / Guardrails / Original Request) built by `commands/rescue.md` before this subagent was invoked, not a raw one-line request. Forward it exactly as received either way — this subagent has no repository tools to build or check a contract itself, and should not try to.
 
 Command selection:
