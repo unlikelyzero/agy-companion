@@ -88,7 +88,7 @@ function printUsage() {
       "  node scripts/agy-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--skip-tool-probe] [--json]",
       "  node scripts/agy-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/agy-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/agy-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model>] [--effort <low|medium|high>] [--agent <agent>] [--mode <accept-edits|plan>] [prompt]",
+      "  node scripts/agy-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model>] [--effort <low|medium|high|xhigh|max>] [--agent <agent>] [--mode <accept-edits|auto|plan>] [prompt]",
       "  node scripts/agy-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/agy-companion.mjs result [job-id] [--json]",
       "  node scripts/agy-companion.mjs cancel [job-id] [--json]"
@@ -712,7 +712,7 @@ function buildTaskRequest({ cwd, prompt, write, resumeLast, jobId, model, effort
   return { cwd, prompt, write, resumeLast, jobId, model, effort, agent, mode };
 }
 
-const VALID_TASK_MODES = ["accept-edits", "plan"];
+const VALID_TASK_MODES = ["accept-edits", "auto", "plan"];
 
 /**
  * Best-effort validation against agy's real model/agent lists (`agy
@@ -891,8 +891,8 @@ async function handleTask(argv) {
   const effort = options.effort || undefined;
   const agent = options.agent || undefined;
   const mode = options.mode || undefined;
-  if (effort && !["low", "medium", "high"].includes(effort)) {
-    throw new Error(`Invalid --effort "${effort}". agy accepts: low, medium, high.`);
+  if (effort && !["low", "medium", "high", "xhigh", "max"].includes(effort)) {
+    throw new Error(`Invalid --effort "${effort}". agy accepts: low, medium, high, xhigh, max.`);
   }
   if (mode && !VALID_TASK_MODES.includes(mode)) {
     throw new Error(`Invalid --mode "${mode}". agy accepts: ${VALID_TASK_MODES.join(", ")}.`);
