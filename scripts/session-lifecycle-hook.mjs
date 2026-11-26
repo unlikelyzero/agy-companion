@@ -26,7 +26,21 @@ function appendEnvVar(name, value) {
   if (!process.env.CLAUDE_ENV_FILE || value == null || value === "") {
     return;
   }
-  fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ${name}=${shellEscape(value)}\n`, "utf8");
+  // SessionStart fires again on resume, clear and compact against the same
+  // env file, so skip a line that is already there. Append-only (never
+  // rewrite) because other plugins' SessionStart hooks write this file too.
+  const line = `export ${name}=${shellEscape(value)}`;
+  let existing = "";
+  try {
+    existing = fs.readFileSync(process.env.CLAUDE_ENV_FILE, "utf8");
+  } catch {
+    // Missing file: nothing to dedupe against.
+  }
+  if (existing.split("\n").includes(line)) {
+    return;
+  }
+  const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+  fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `${separator}${line}\n`, "utf8");
 }
 
 /**
