@@ -1,6 +1,6 @@
 {
   "comment": "Every flag and subcommand in .github/agy-help-snapshot.txt, each with a recorded decision. tests/agy-surface.test.mjs fails when the snapshot and this file disagree, so refreshing the snapshot for a new agy release forces a decision on whatever that release added. status is either \"used\" (agy-companion passes it) or \"considered\" (deliberately not used, with the reason). See docs/TESTING.md.",
-  "reviewedAgainstVersion": "1.5.14",
+  "reviewedAgainstVersion": "1.5.18",
   "flags": {
     "--add-dir": { "status": "used", "note": "Extra workspace roots for a review or task run." },
     "--agent": { "status": "used", "note": "Optional named agent on /agy:rescue." },
@@ -24,8 +24,10 @@
     "--project": { "status": "considered", "note": "Not used. No project selection is exposed; runs use whatever the install defaults to." },
     "--prompt": { "status": "considered", "note": "Alias for --print." },
     "--prompt-interactive": { "status": "considered", "note": "Not used. Nothing here runs interactively." },
+    "-r": { "status": "considered", "note": "Short alias for --conversation; the long form is spelled out at call sites." },
     "--remote-agent": { "status": "considered", "note": "Not used. Runs conversations on remote agents; reviews and tasks must run against the local snapshot or working tree." },
     "--remote-control": { "status": "considered", "note": "Not used. Opens a remote connection for an interactive session; jobs here are headless and local." },
+    "--resume": { "status": "considered", "note": "Alias for --conversation; the long form is spelled out at call sites." },
     "--sandbox": { "status": "used", "note": "Terminal restrictions, probed by /agy:setup --doctor." },
     "--settings": { "status": "considered", "note": "Not used. Per-session settings overrides; nothing here needs a per-run setting." }
   },
